@@ -96,6 +96,10 @@ const messages = defineMessages({
     id: 'settings.service.form.trapLinkClicks',
     defaultMessage: 'Open URLs within Ferdium',
   },
+  isAdBlockerEnabled: {
+    id: 'settings.service.form.isAdBlockerEnabled',
+    defaultMessage: 'Block ads and trackers',
+  },
   useFavicon: {
     id: 'settings.service.form.useFavicon',
     defaultMessage: 'Use service favicon instead of default or custom icon',
@@ -260,6 +264,15 @@ class EditServiceScreen extends Component<IProps> {
             DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
           ),
           default: DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
+          type: 'checkbox',
+        },
+        isAdBlockerEnabled: {
+          label: intl.formatMessage(messages.isAdBlockerEnabled),
+          value: ifUndefined<boolean>(
+            service?.isAdBlockerEnabled,
+            DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
+          ),
+          default: DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
           type: 'checkbox',
         },
         useFavicon: {

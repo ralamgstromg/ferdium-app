@@ -389,3 +389,33 @@ server*.log
 
 # env
 .envrc
+
+### Credentials and service access data (never commit) ###
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.crt
+*.cer
+credentials*.json
+tokens*.json
+secrets*.json
+*.token
+.npmrc.local
+.netrc
+# Local databases hold service sessions/tokens; only the template is tracked.
+src/internal-server/database/*.sqlite
+!src/internal-server/database/template.sqlite
+src/internal-server/database/*.sqlite-journal
+# Browser-style session data created by running the app from the repo
+**/Partitions/
+**/Cookies
+**/Cookies-journal
+**/Local Storage/
+**/Session Storage/
+**/IndexedDB/

@@ -418,6 +418,7 @@
   "settings.service.form.tabHosted": "Alojado",
   "settings.service.form.tabOnPremise": "Auto alojado ⭐️",
   "settings.service.form.team": "Equipo",
+  "settings.service.form.isAdBlockerEnabled": "Bloquear anuncios y rastreadores",
   "settings.service.form.trapLinkClicks": "Abrir URLs en Ferdium",
   "settings.service.form.useHostedService": "Usar el servicio alojado {name}.",
   "settings.service.form.yourServices": "Tus servicios",

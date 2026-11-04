@@ -44,3 +44,9 @@ export default function userAgent() {
 
   return `Mozilla/5.0 (${platformString}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
 }
+
+// Google rejects sign-in from embedded browsers that send a versioned Chrome
+// token together with Electron-specific traits; without the version it accepts
+// the request (same workaround as the service webviews in models/UserAgent).
+export const chromelessUserAgent = (): string =>
+  userAgent().replace(/Chrome\/[\d.]+/, 'Chrome');

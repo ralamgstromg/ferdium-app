@@ -465,6 +465,7 @@
   "settings.service.form.iconUpload": "Drop your image, or click here",
   "settings.service.form.indirectMessageInfo": "You will be notified about all new messages in a channel, not just @username, @channel, @here, ...",
   "settings.service.form.indirectMessages": "Show message badge for all new messages",
+  "settings.service.form.isAdBlockerEnabled": "Block ads and trackers",
   "settings.service.form.isHibernatedEnabledInfo": "When enabled, a service will be shut down after a period of time to save system resources.",
   "settings.service.form.isMutedInfo": "When disabled, all notification sounds and audio playback are muted",
   "settings.service.form.maxFileSize": "Maximum filesize:",

@@ -413,6 +413,7 @@ class EditServiceForm extends Component<IProps, IState> {
                   </p>
                   <Toggle {...form.$('isWakeUpEnabled').bind()} />
                   <Toggle {...form.$('trapLinkClicks').bind()} />
+                  <Toggle {...form.$('isAdBlockerEnabled').bind()} />
                   {/* TODO: Need to figure out how to effect this change without a reload of the recipe */}
                   <p className="settings__help indented__help">
                     {intl.formatMessage(messages.serviceReloadRequired)}

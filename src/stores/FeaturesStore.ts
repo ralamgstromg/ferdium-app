@@ -8,6 +8,7 @@ import {
 import type { Stores } from '../@types/stores.types';
 import type { Actions } from '../actions/lib/actions';
 import type { ApiInterface } from '../api';
+import adBlocker from '../features/adBlocker';
 import appearance from '../features/appearance';
 import basicAuth from '../features/basicAuth';
 import communityRecipes from '../features/communityRecipes';
@@ -81,6 +82,7 @@ export default class FeaturesStore extends TypedStore {
 
   _setupFeatures(): void {
     serviceProxy(this.stores);
+    adBlocker(this.stores, this.actions);
     basicAuth();
     workspaces(this.stores, this.actions);
     quickSwitch();

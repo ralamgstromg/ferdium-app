@@ -90,6 +90,9 @@ export default class Service {
 
   @observable trapLinkClicks: boolean = DEFAULT_SERVICE_SETTINGS.trapLinkClicks;
 
+  @observable isAdBlockerEnabled: boolean =
+    DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled;
+
   @observable isIndirectMessageBadgeEnabled: boolean = true;
 
   @observable iconUrl: string = '';
@@ -226,6 +229,10 @@ export default class Service {
     this.trapLinkClicks = ifUndefined<boolean>(
       data.trapLinkClicks,
       this.trapLinkClicks,
+    );
+    this.isAdBlockerEnabled = ifUndefined<boolean>(
+      data.isAdBlockerEnabled,
+      this.isAdBlockerEnabled,
     );
     this.isIndirectMessageBadgeEnabled = ifUndefined<boolean>(
       data.isIndirectMessageBadgeEnabled,
@@ -412,6 +419,7 @@ export default class Service {
       hasCustomIcon: this.hasCustomIcon,
       onlyShowFavoritesInUnreadCount: this.onlyShowFavoritesInUnreadCount,
       trapLinkClicks: this.trapLinkClicks,
+      isAdBlockerEnabled: this.isAdBlockerEnabled,
     };
   }
 

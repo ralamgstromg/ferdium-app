@@ -19,6 +19,7 @@ import { emptyDirSync, ensureFileSync } from 'fs-extra';
 import minimist from 'minimist';
 import ms from 'ms';
 import { enableWebContents, initializeRemote } from './electron-util';
+import { setServiceAdBlock } from './electron/adBlocker';
 import enforceMacOSAppLocation from './enforce-macos-app-location';
 
 initializeRemote();
@@ -55,7 +56,7 @@ import { asarPath } from './helpers/asar-helpers';
 import { checkIfCertIsPresent } from './helpers/certs-helpers';
 import { translateTo } from './helpers/translation-helpers';
 import { openExternalUrl } from './helpers/url-helpers';
-import userAgent from './helpers/userAgent-helpers';
+import userAgent, { chromelessUserAgent } from './helpers/userAgent-helpers';
 import generatedTranslations from './i18n/translations';
 import { darkThemeGrayDarkest } from './themes/legacy';
 
@@ -391,9 +392,16 @@ const createWindow = () => {
         return { action: 'deny' };
       });
 
-      contents.on('did-create-window', child => {
+      contents.on('did-create-window', (child, { url }) => {
         enableWebContents(child.webContents);
         child.webContents.setWebRTCIPHandlingPolicy(webRTCIPHandlingPolicy);
+        if (url.startsWith('https://accounts.google.com')) {
+          // Sign-in popups get the same UA as the service webviews use for
+          // Google accounts, otherwise Google reports an unsupported browser.
+          // Changing the UA cancels the pending navigation, so reload it.
+          child.webContents.setUserAgent(chromelessUserAgent());
+          child.webContents.loadURL(url);
+        }
       });
       // Handle will download event from main process (prevent download dialog)
       contents.session.on('will-download', (_e, item) => {
@@ -867,6 +875,17 @@ ipcMain.on('stop-find-in-page', (e, action) => {
     }
   }
   e.returnValue = null;
+});
+
+ipcMain.handle('set-service-adblock', async (_e, { serviceId, enabled }) => {
+  if (serviceId === undefined) {
+    return;
+  }
+  try {
+    await setServiceAdBlock(serviceId, !!enabled);
+  } catch (error) {
+    debug(error);
+  }
 });
 
 ipcMain.on('set-spellchecker-locales', (_e, { locale, serviceId }) => {

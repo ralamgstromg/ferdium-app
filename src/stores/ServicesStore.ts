@@ -476,6 +476,7 @@ export default class ServicesStore extends TypedStore {
       isBadgeEnabled: DEFAULT_SERVICE_SETTINGS.isBadgeEnabled,
       isMediaBadgeEnabled: DEFAULT_SERVICE_SETTINGS.isMediaBadgeEnabled,
       trapLinkClicks: DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
+      isAdBlockerEnabled: DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
       useFavicon: DEFAULT_SERVICE_SETTINGS.useFavicon,
       isMuted: DEFAULT_SERVICE_SETTINGS.isMuted,
       customIcon: DEFAULT_SERVICE_SETTINGS.customIcon,
