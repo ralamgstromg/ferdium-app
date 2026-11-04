@@ -1,8 +1,14 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { Notification, session } from 'electron';
+import { Notification, type WebContents, session } from 'electron';
 import { userDataPath } from '../environment-remote';
+import {
+  AD_PLACEHOLDER_CLEANUP_SCRIPT,
+  OUTLOOK_HOSTS,
+} from './adPlaceholderCleanup';
 
 const debug = require('../preload-safe-debug')('Ferdium:adBlocker');
+
+const sessionsWithBlocking = new WeakSet<Electron.Session>();
 
 let blockedHostsPromise: Promise<Set<string> | undefined> | undefined;
 
@@ -192,9 +198,11 @@ export const setServiceAdBlock = async (
   const serviceSession = session.fromPartition(`persist:service-${serviceId}`);
 
   if (!enabled) {
+    sessionsWithBlocking.delete(serviceSession);
     serviceSession.webRequest.onBeforeRequest(null);
     return;
   }
+  sessionsWithBlocking.add(serviceSession);
 
   blockedHostsPromise ??= loadBlockedHosts();
   const hosts = await blockedHostsPromise;
@@ -221,4 +229,25 @@ export const setServiceAdBlock = async (
       callback(stub ? { redirectURL: stub } : { cancel: true });
     },
   );
+};
+
+// Hides the in-page ad placeholders and "ad blocker detected" notices of sites
+// that render them themselves (currently Outlook), for services with blocking.
+export const watchAdPlaceholders = (contents: WebContents): void => {
+  contents.on('dom-ready', () => {
+    if (!sessionsWithBlocking.has(contents.session)) {
+      return;
+    }
+    let hostname = '';
+    try {
+      hostname = new URL(contents.getURL()).hostname;
+    } catch {
+      return;
+    }
+    if (OUTLOOK_HOSTS.test(hostname)) {
+      contents
+        .executeJavaScript(AD_PLACEHOLDER_CLEANUP_SCRIPT)
+        .catch(error => debug('Ad placeholder cleanup failed', error));
+    }
+  });
 };

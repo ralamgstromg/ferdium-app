@@ -48,6 +48,19 @@ const isBlockedRequest = (url: string, resourceType = 'script'): boolean => {
   return result.cancel === true || result.redirectURL !== undefined;
 };
 
+const contentsFor = (url: string) => {
+  const handlers: Record<string, () => void> = {};
+  return {
+    session: mockSession,
+    getURL: () => url,
+    executeJavaScript: jest.fn(async () => {}),
+    on: (event: string, handler: () => void) => {
+      handlers[event] = handler;
+    },
+    fire: (event: string) => handlers[event](),
+  };
+};
+
 describe('adBlocker', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -148,5 +161,34 @@ describe('adBlocker', () => {
     await expect(setServiceAdBlock('a', true)).resolves.toBeUndefined();
 
     expect(mockOnBeforeRequest).not.toHaveBeenCalled();
+  });
+
+  describe('watchAdPlaceholders', () => {
+    it('cleans Outlook only for sessions with blocking enabled', async () => {
+      const { setServiceAdBlock, watchAdPlaceholders } = await loadModule();
+      const outlook = contentsFor('https://outlook.live.com/mail/');
+      watchAdPlaceholders(outlook);
+
+      outlook.fire('dom-ready');
+      expect(outlook.executeJavaScript).not.toHaveBeenCalled();
+
+      await setServiceAdBlock('a', true);
+      outlook.fire('dom-ready');
+      expect(outlook.executeJavaScript).toHaveBeenCalledTimes(1);
+
+      await setServiceAdBlock('a', false);
+      outlook.fire('dom-ready');
+      expect(outlook.executeJavaScript).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves other sites untouched', async () => {
+      const { setServiceAdBlock, watchAdPlaceholders } = await loadModule();
+      const other = contentsFor('https://example.com/');
+      watchAdPlaceholders(other);
+      await setServiceAdBlock('a', true);
+      other.fire('dom-ready');
+
+      expect(other.executeJavaScript).not.toHaveBeenCalled();
+    });
   });
 });

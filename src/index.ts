@@ -19,7 +19,7 @@ import { emptyDirSync, ensureFileSync } from 'fs-extra';
 import minimist from 'minimist';
 import ms from 'ms';
 import { enableWebContents, initializeRemote } from './electron-util';
-import { setServiceAdBlock } from './electron/adBlocker';
+import { setServiceAdBlock, watchAdPlaceholders } from './electron/adBlocker';
 import enforceMacOSAppLocation from './enforce-macos-app-location';
 
 initializeRemote();
@@ -297,6 +297,7 @@ const createWindow = () => {
   app.on('web-contents-created', (_e, contents) => {
     if (contents.getType() === 'webview') {
       enableWebContents(contents);
+      watchAdPlaceholders(contents);
 
       // Set permission handlers on service webview sessions.
       // setPermissionRequestHandler allows safe permissions and denies unknown ones.

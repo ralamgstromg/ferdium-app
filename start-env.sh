@@ -6,8 +6,9 @@
 #   (${FERDIUM_TOOLS_DIR:-~/.cache/ferdium-tools}) sin modificar el sistema.
 # - Inicializa el submódulo de recetas, instala dependencias y ejecuta `pnpm start:all-dev`.
 #
-# Uso: ./start-env.sh            (instala si hace falta y arranca en desarrollo)
-#      ./start-env.sh --setup    (solo prepara el entorno, sin arrancar la app)
+# Uso: ./start-env.sh                  (instala si hace falta y arranca en desarrollo)
+#      ./start-env.sh --setup          (solo prepara el entorno, sin arrancar la app)
+#      ./start-env.sh --build [args]   (compilado de producción; ver build.sh)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,6 +96,12 @@ pnpm install
 if [[ "${1:-}" == "--setup" ]]; then
   log "Entorno listo. Arranca con: pnpm start:all-dev"
   exit 0
+fi
+
+if [[ "${1:-}" == "--build" ]]; then
+  shift
+  log "Compilando en modo producción (pnpm build $*) ..."
+  exec pnpm build "$@"
 fi
 
 log "Arrancando Ferdium en modo desarrollo ..."
