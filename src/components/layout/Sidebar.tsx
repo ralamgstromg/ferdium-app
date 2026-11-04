@@ -1,5 +1,6 @@
 import {
   mdiBell,
+  mdiBellBadgeOutline,
   mdiBellOff,
   mdiCheckAll,
   mdiChevronDown,
@@ -31,6 +32,7 @@ import {
   todosToggleShortcutKey,
   workspaceToggleShortcutKey,
 } from '../../environment';
+import { notificationCenterStore } from '../../features/notificationCenter';
 import { todosStore } from '../../features/todos';
 import { todoActions } from '../../features/todos/actions';
 import globalMessages from '../../i18n/globalMessages';
@@ -63,6 +65,10 @@ const messages = defineMessages({
   closeWorkspaceDrawer: {
     id: 'sidebar.closeWorkspaceDrawer',
     defaultMessage: 'Close workspace drawer',
+  },
+  openNotificationCenter: {
+    id: 'sidebar.openNotificationCenter',
+    defaultMessage: 'Pending notifications',
   },
   openTodosDrawer: {
     id: 'sidebar.openTodosDrawer',
@@ -303,6 +309,46 @@ class Sidebar extends Component<IProps, IState> {
             <Icon icon={isAppMuted ? mdiBellOff : mdiBell} size={1.5} />
           </button>
         ) : null}
+        {isMenuCollapsed ? null : (
+          <button
+            type="button"
+            onClick={() => {
+              notificationCenterStore.togglePanel();
+              this.updateToolTip();
+            }}
+            className={`sidebar__button sidebar__button--notification-center ${
+              notificationCenterStore.isPanelVisible ? 'is-active' : ''
+            }`}
+            style={{ position: 'relative' }}
+            data-tooltip-id="tooltip-sidebar-button"
+            data-tooltip-content={intl.formatMessage(
+              messages.openNotificationCenter,
+            )}
+          >
+            <Icon icon={mdiBellBadgeOutline} size={1.5} />
+            {notificationCenterStore.unreadCount > 0 ? (
+              <span
+                style={{
+                  background: '#e74c3c',
+                  borderRadius: 8,
+                  color: '#fff',
+                  fontSize: 10,
+                  lineHeight: '14px',
+                  minWidth: 14,
+                  padding: '0 3px',
+                  position: 'absolute',
+                  right: 2,
+                  textAlign: 'center',
+                  top: 2,
+                }}
+              >
+                {notificationCenterStore.unreadCount > 99
+                  ? '99+'
+                  : notificationCenterStore.unreadCount}
+              </span>
+            ) : null}
+          </button>
+        )}
         {todosStore.isFeatureEnabledByUser && !isMenuCollapsed ? (
           <button
             type="button"

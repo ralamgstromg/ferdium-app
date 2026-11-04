@@ -4,14 +4,17 @@ import { ensureFileSync, pathExistsSync, writeFileSync } from 'fs-extra';
 import { debounce, remove } from 'lodash';
 import { action, computed, makeObservable, observable, reaction } from 'mobx';
 import ms from 'ms';
+import { v4 as uuidV4 } from 'uuid';
 
 import type { Stores } from '../@types/stores.types';
 import type { Actions } from '../actions/lib/actions';
 import type { ApiInterface } from '../api';
 import { DEFAULT_SERVICE_SETTINGS, KEEP_WS_LOADED_USID } from '../config';
 import { ferdiumVersion } from '../environment-remote';
+import { notificationCenterStore } from '../features/notificationCenter/store';
 import { workspaceStore } from '../features/workspaces';
 import { writeTextToClipboard } from '../helpers/clipboard-helpers';
+import { getTranslatedText } from '../helpers/i18n-helpers';
 import {
   getDevRecipeDirectory,
   getRecipeDirectory,
@@ -28,7 +31,20 @@ import TypedStore from './lib/TypedStore';
 
 const debug = require('../preload-safe-debug')('Ferdium:ServiceStore');
 
+// Time to wait for the web app's own notification before synthesizing one
+// from an unread counter increase (avoids duplicates).
+const NEW_MESSAGES_GRACE_MS = 5000;
+
 export default class ServicesStore extends TypedStore {
+  private lastWebNotificationAt = new Map<string, number>();
+
+  private unreadCountsInitialised = new Set<string>();
+
+  private pendingNewMessages = new Map<
+    string,
+    { count: number; since: number }
+  >();
+
   @observable allServicesRequest: CachedRequest = new CachedRequest(
     this.api.services,
     'all',
@@ -673,6 +689,7 @@ export default class ServicesStore extends TypedStore {
       }
     }
     this._setIsActive(service, true);
+    notificationCenterStore.markServiceRead(service.id);
     this._awake({ serviceId: service.id });
     service.retryFailedLoad(this.stores.app.isOnline, true);
 
@@ -725,9 +742,82 @@ export default class ServicesStore extends TypedStore {
 
   @action _setUnreadMessageCount({ serviceId, count }) {
     const service = this.one(serviceId);
+    const previousDirect = service.unreadDirectMessageCount;
 
     service.unreadDirectMessageCount = count.direct;
     service.unreadIndirectMessageCount = count.indirect;
+
+    this._detectNewMessages(service, previousDirect, count.direct);
+  }
+
+  // Recipes such as Gmail or Outlook only report counters and never emit a
+  // web notification. When the direct counter grows and the web app did not
+  // notify by itself, show an equivalent notification so it is not missed.
+  private _detectNewMessages(
+    service: Service,
+    previousCount: number,
+    currentCount: number,
+  ) {
+    const { id } = service;
+
+    // The first counter after a (re)load is a baseline, not new mail.
+    if (!this.unreadCountsInitialised.has(id)) {
+      this.unreadCountsInitialised.add(id);
+      return;
+    }
+
+    const delta = currentCount - previousCount;
+    if (!(delta > 0)) return;
+
+    const pending = this.pendingNewMessages.get(id);
+    if (pending) {
+      pending.count += delta;
+      return;
+    }
+
+    this.pendingNewMessages.set(id, { count: delta, since: Date.now() });
+    setTimeout(() => this._flushNewMessages(id), NEW_MESSAGES_GRACE_MS);
+  }
+
+  private _flushNewMessages(serviceId: string) {
+    const pending = this.pendingNewMessages.get(serviceId);
+    this.pendingNewMessages.delete(serviceId);
+
+    const service = this.all.find(s => s.id === serviceId);
+    if (!pending || !service) return;
+
+    // The web app notified on its own, or the user is already looking at it.
+    if ((this.lastWebNotificationAt.get(serviceId) ?? 0) >= pending.since) {
+      return;
+    }
+    if (service.isActive && this.stores.app.isFocused) return;
+
+    const { locale } = this.stores.app;
+    const body =
+      pending.count === 1
+        ? getTranslatedText(
+            locale,
+            'feature.notificationCenter.newMessage',
+            '1 new message',
+          )
+        : getTranslatedText(
+            locale,
+            'feature.notificationCenter.newMessages',
+            '{count} new messages',
+            { count: String(pending.count) },
+          );
+
+    this._handleIPCMessage({
+      serviceId,
+      channel: 'notification',
+      args: [
+        {
+          title: service.name,
+          options: { body },
+          notificationId: uuidV4(),
+        },
+      ],
+    });
   }
 
   @action _setDialogTitle({ serviceId, dialogTitle }) {
@@ -814,6 +904,8 @@ export default class ServicesStore extends TypedStore {
       case 'hello': {
         debug('Received hello event from', serviceId);
 
+        this.unreadCountsInitialised.delete(serviceId);
+
         this._initRecipePolling(service.id);
         this._initializeServiceRecipeInWebview(serviceId);
         this._shareSettingsWithServiceProcess();
@@ -860,6 +952,26 @@ export default class ServicesStore extends TypedStore {
 
       case 'notification': {
         const { notificationId, options } = args[0];
+
+        this.lastWebNotificationAt.set(serviceId, Date.now());
+
+        if (service.isNotificationEnabled) {
+          const isPrivate =
+            this.stores.settings.all.app.privateNotifications === true;
+          notificationCenterStore.add({
+            serviceId,
+            serviceName: service.name,
+            title: isPrivate
+              ? `Notification from ${service.name}`
+              : typeof args[0].title === 'string'
+                ? args[0].title
+                : service.name,
+            body:
+              !isPrivate && typeof options.body === 'string'
+                ? options.body
+                : '',
+          });
+        }
 
         const { isTwoFactorAutoCatcherEnabled, twoFactorAutoCatcherMatcher } =
           this.stores.settings.all.app;
