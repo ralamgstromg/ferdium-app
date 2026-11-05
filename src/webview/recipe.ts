@@ -43,6 +43,7 @@ import { windowOpenShim } from './windowOpenShim';
 
 import type { AppStore } from '../@types/stores.types';
 import { DEFAULT_APP_SETTINGS } from '../config';
+import { shouldInjectWebAuthnPageScript } from '../helpers/webauthn-helpers';
 import { cleanseJSObject, ifUndefined, safeParseInt } from '../jsUtils';
 import type Service from '../models/Service';
 
@@ -111,6 +112,9 @@ if (process.platform === 'linux') {
   // isolated preload world, which is what we need for monkey-patching.
   const { webauthnPageScript } = require('electron-webauthn-linux');
   process.once('document-start', () => {
+    if (!shouldInjectWebAuthnPageScript(window.location.hostname)) {
+      return;
+    }
     const script = document.createElement('script');
     script.textContent = webauthnPageScript;
     document.documentElement.append(script);

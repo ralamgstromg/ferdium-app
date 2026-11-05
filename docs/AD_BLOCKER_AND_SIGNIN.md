@@ -60,3 +60,50 @@ Main-process code for these features lives in `src/electron/`.
   is a masked placeholder (`'****'`), reported as a false positive.
 - Dockerfile: `:latest` tag, root user, no `HEALTHCHECK`. Pre-existing.
 - Not changed in this work. Electron upgrade needs its own plan.
+
+## WebAuthn page script on sign-in pages
+
+- The WebAuthn page script (`electron-webauthn-linux`) adds a "Google Chrome"
+  brand to `navigator.userAgentData` and forces
+  `isUserVerifyingPlatformAuthenticatorAvailable` to `true`. The Sec-CH-UA
+  request headers do not carry that brand, so the page sees two browsers.
+- `shouldInjectWebAuthnPageScript(hostname)` skips the script on
+  `accounts.google.com` and `claude.ai`. It is used in the recipe preload
+  (`src/webview/recipe.ts`) and the popup preload
+  (`src/webview/webauthn-popup-preload.ts`).
+- `src/electron/requestHeaders.ts` keeps one `onBeforeSendHeaders` listener per
+  service session and applies every rule to it. Electron allows only one
+  listener per event and session. Recipe headers (`modifyRequestHeaders`) use
+  the same registry.
+- Not verified in the running app: the Google sign-in from `claude.ai`.
+
+## Popup preload (sandboxed)
+
+- The popup preload (`src/webview/webauthn-popup-preload.ts`) runs in a
+  sandbox. A sandboxed preload cannot `require` the package or local modules,
+  so it failed with `module not found: electron-webauthn-linux` and no popup
+  had the WebAuthn bridge.
+- The main process passes the page script and the skipped hosts as
+  `additionalArguments` (`--ferdium-webauthn-script=`,
+  `--ferdium-webauthn-skip=`) when it creates the popup. The preload reads them
+  from `process.argv`.
+- A synchronous IPC call (`ipcRenderer.sendSync`) in the preload made Google
+  navigations fail with `ERR_FAILED`, so it is not used.
+- Verified with Electron, sandbox on: a local page gets the script and
+  `electronWebAuthn`; `accounts.google.com` gets neither and loads normally.
+- Not verified in the running app: the Google sign-in from `claude.ai`.
+
+## Google sign-in opens in the system browser
+
+- Embedded Google sign-in is rejected by Google's server: the identifier step
+  (`batchexecute` `MI613e`) redirects to `/v3/signin/rejected` after the
+  `browserinfo` check. No app-side change (user agent, headers, preloads,
+  popup options) avoided it.
+- `setWindowOpenHandler` (`src/index.ts`) sends Google sign-in URLs
+  (`isGoogleSignInUrl`) to `openExternalUrl` and denies the popup.
+- A popup that starts on `about:blank` and navigates to Google is closed and
+  its URL is opened in the system browser (`will-navigate` in `did-create-window`).
+- Trade-off: the sign-in completes in the system browser. The Claude session
+  is not created inside Ferdium.
+- Removed: the chromeless user agent for Google popups and the popup
+  diagnostics.

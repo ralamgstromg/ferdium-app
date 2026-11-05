@@ -13,14 +13,16 @@ import {
 } from 'electron';
 
 import { initialize } from 'electron-react-titlebar/main';
-import { setupWebAuthn } from 'electron-webauthn-linux';
+import { setupWebAuthn, webauthnPageScript } from 'electron-webauthn-linux';
 import windowStateKeeper from 'electron-window-state';
 import { emptyDirSync, ensureFileSync } from 'fs-extra';
 import minimist from 'minimist';
 import ms from 'ms';
 import { enableWebContents, initializeRemote } from './electron-util';
 import { setServiceAdBlock, watchAdPlaceholders } from './electron/adBlocker';
+import { addRecipeHeaders } from './electron/requestHeaders';
 import enforceMacOSAppLocation from './enforce-macos-app-location';
+import { WEBAUTHN_SKIPPED_HOSTS } from './helpers/webauthn-helpers';
 
 initializeRemote();
 
@@ -56,26 +58,11 @@ import { asarPath } from './helpers/asar-helpers';
 import { checkIfCertIsPresent } from './helpers/certs-helpers';
 import { translateTo } from './helpers/translation-helpers';
 import { openExternalUrl } from './helpers/url-helpers';
-import userAgent, {
-  chromelessUserAgent,
-  isGoogleSignInUrl,
-} from './helpers/userAgent-helpers';
+import userAgent, { isGoogleSignInUrl } from './helpers/userAgent-helpers';
 import generatedTranslations from './i18n/translations';
 import { darkThemeGrayDarkest } from './themes/legacy';
 
 const debug = require('./preload-safe-debug')('Ferdium:App');
-
-// Popup URLs go to the log without their query values: OAuth parameters are
-// session-bound and should not be written to disk.
-const describePopupUrl = (url: string): string => {
-  try {
-    const parsed = new URL(url);
-    const params = [...parsed.searchParams.keys()].join(',');
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname} params=[${params}]`;
-  } catch {
-    return 'invalid-url';
-  }
-};
 
 // Globally set useragent to fix user agent override in service workers
 debug('Set userAgent to ', userAgent());
@@ -367,6 +354,12 @@ const createWindow = () => {
       }
 
       contents.setWindowOpenHandler(({ url, disposition, features }) => {
+        // Google sign-in does not work in an embedded popup: the server rejects
+        // the identifier step. Sign-in opens in the system browser instead.
+        if (isGoogleSignInUrl(url)) {
+          openExternalUrl(url);
+          return { action: 'deny' };
+        }
         // window.open() calls that ask for a window (a target name or window
         // features) arrive with the 'new-window' disposition. OAuth popups
         // (Google, Microsoft, etc.) need window.opener preserved so the parent
@@ -397,6 +390,10 @@ const createWindow = () => {
                     ),
                     contextIsolation: true,
                     sandbox: true,
+                    additionalArguments: [
+                      `--ferdium-webauthn-script=${webauthnPageScript}`,
+                      `--ferdium-webauthn-skip=${WEBAUTHN_SKIPPED_HOSTS.join(',')}`,
+                    ],
                   }
                 : { session: contents.session },
             },
@@ -408,36 +405,18 @@ const createWindow = () => {
         return { action: 'deny' };
       });
 
-      contents.on('did-create-window', (child, { url }) => {
+      contents.on('did-create-window', child => {
         enableWebContents(child.webContents);
         child.webContents.setWebRTCIPHandlingPolicy(webRTCIPHandlingPolicy);
-        debug('Popup created', describePopupUrl(url));
-        child.webContents.on('did-navigate', (_event, navigatedUrl) => {
-          debug('Popup navigated', describePopupUrl(navigatedUrl));
-        });
-        if (isGoogleSignInUrl(url)) {
-          // Sign-in popups get the same UA as the service webviews use for
-          // Google accounts, otherwise Google reports an unsupported browser.
-          // Changing the UA cancels the pending navigation, so reload it.
-          child.webContents.setUserAgent(chromelessUserAgent());
-          child.webContents.loadURL(url);
-        }
-        // A popup opened on about:blank reaches Google through a later
-        // navigation. Catch it, switch the UA and load it again.
+        // A popup opened on about:blank reaches Google only through a later
+        // navigation. Send it to the system browser and close the popup.
         child.webContents.on('will-navigate', (event, target) => {
-          const isGoogle = isGoogleSignInUrl(target);
-          const chromeless =
-            child.webContents.getUserAgent() === chromelessUserAgent();
-          debug('Popup will navigate', describePopupUrl(target), {
-            isGoogle,
-            chromeless,
-          });
-          if (!isGoogle || chromeless) {
+          if (!isGoogleSignInUrl(target)) {
             return;
           }
           event.preventDefault();
-          child.webContents.setUserAgent(chromelessUserAgent());
-          child.webContents.loadURL(target);
+          openExternalUrl(target);
+          child.close();
         });
       });
       // Handle will download event from main process (prevent download dialog)
@@ -831,18 +810,11 @@ ipcMain.on(
     );
     for (const headerFilterSet of modifiedRequestHeaders) {
       const { headers, requestFilters } = headerFilterSet;
-      session
-        .fromPartition(`persist:service-${serviceId}`)
-        .webRequest.onBeforeSendHeaders(requestFilters, (details, callback) => {
-          for (const key in headers) {
-            if (Object.prototype.hasOwnProperty.call(headers, key)) {
-              const value = headers[key];
-              // eslint-disable-next-line no-param-reassign
-              details.requestHeaders[key] = value;
-            }
-          }
-          callback({ requestHeaders: details.requestHeaders });
-        });
+      addRecipeHeaders(
+        session.fromPartition(`persist:service-${serviceId}`),
+        requestFilters.urls,
+        headers,
+      );
     }
   },
 );
