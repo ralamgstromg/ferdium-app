@@ -1,42 +1,36 @@
-const Workspace = use('App/Models/Workspace');
-const { validateAll } = use('Validator');
-
 const { v4: uuid } = require('uuid');
 const { convertToJSON } = require('../../../../jsUtils');
+const { getDb, newUnusedId } = require('../../Database');
+const { validateInput } = require('../../Validation');
 
 class WorkspaceController {
   // Create a new workspace for user
   async create({ request, response }) {
     // Validate user input
-    const validation = await validateAll(request.all(), {
-      name: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        name: vine.string(),
+      });
+    }, request.all());
+    if (!validation.valid) {
       return response.status(401).send({
         message: 'Invalid POST arguments',
-        messages: validation.messages(),
+        messages: validation.messages,
         status: 401,
       });
     }
 
+    const db = await getDb();
     const data = request.all();
 
-    // Get new, unused uuid
-    let workspaceId;
-    do {
-      workspaceId = uuid();
-    } while (
-      // eslint-disable-next-line no-await-in-loop, unicorn/no-await-expression-member
-      (await Workspace.query().where('workspaceId', workspaceId).fetch()).rows
-        .length > 0
-    );
+    const workspaceId = await newUnusedId('workspaces', 'workspaceId', uuid);
 
-    const allWorkspaces = await Workspace.all();
-    const order = allWorkspaces.rows.length;
+    const existing = await db.from('workspaces');
+    const order = existing.length;
     const { name } = data;
     delete data.name;
 
-    await Workspace.create({
+    await db.table('workspaces').insert({
       workspaceId,
       name,
       order,
@@ -55,22 +49,26 @@ class WorkspaceController {
 
   async edit({ request, response, params }) {
     // Validate user input
-    const validation = await validateAll(request.all(), {
-      name: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        name: vine.string(),
+      });
+    }, request.all());
+    if (!validation.valid) {
       return response.status(401).send({
         message: 'Invalid POST arguments',
-        messages: validation.messages(),
+        messages: validation.messages,
         status: 401,
       });
     }
 
+    const db = await getDb();
     const data = request.all();
     const { id } = params;
 
     // Update data in database
-    await Workspace.query()
+    await db
+      .from('workspaces')
       .where('workspaceId', id)
       .update({
         name: data.name,
@@ -78,10 +76,10 @@ class WorkspaceController {
       });
 
     // Get updated row
-    const workspaceQuery = await Workspace.query()
+    const workspace = await db
+      .from('workspaces')
       .where('workspaceId', id)
-      .fetch();
-    const workspace = workspaceQuery.rows[0];
+      .first();
 
     return response.send({
       id: workspace.workspaceId,
@@ -94,21 +92,24 @@ class WorkspaceController {
 
   async delete({ response, params }) {
     // Validate user input
-    const validation = await validateAll(params, {
-      id: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        id: vine.string(),
+      });
+    }, params);
+    if (!validation.valid) {
       return response.status(401).send({
         message: 'Invalid arguments',
-        messages: validation.messages(),
+        messages: validation.messages,
         status: 401,
       });
     }
 
+    const db = await getDb();
     const { id } = params;
 
     // Update data in database
-    await Workspace.query().where('workspaceId', id).delete();
+    await db.from('workspaces').where('workspaceId', id).delete();
 
     return response.send({
       message: 'Successfully deleted workspace',
@@ -117,21 +118,18 @@ class WorkspaceController {
 
   // List all workspaces a user has created
   async list({ response }) {
-    const allWorkspaces = await Workspace.all();
-    const workspaces = allWorkspaces.rows;
-    // Convert to array with all data Franz wants
-    let workspacesArray = [];
-    if (workspaces) {
-      workspacesArray = workspaces.map(workspace => ({
+    const db = await getDb();
+    const workspaces = await db.from('workspaces');
+
+    return response.send(
+      workspaces.map(workspace => ({
         id: workspace.workspaceId,
         name: workspace.name,
         order: workspace.order,
         services: convertToJSON(workspace.services),
         userId: 1,
-      }));
-    }
-
-    return response.send(workspacesArray);
+      })),
+    );
   }
 }
 

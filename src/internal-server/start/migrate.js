@@ -1,26 +1,27 @@
 const { convertToJSON } = require('../../jsUtils');
 const { ferdiumVersion } = require('../../environment-remote');
+const { getDb } = require('../app/Database');
 
 /**
  * Migrate server database to work with current Ferdium version
  */
-const Database = use('Database');
-const User = use('App/Models/User');
 
 const migrateLog = text => {
   // eslint-disable-next-line no-console
   console.log('\u001B[36m%s\u001B[0m', 'Ferdium Migration:', '\u001B[0m', text);
 };
 
-module.exports = async () => {
+async function migrate() {
+  const db = await getDb();
+
   migrateLog('🧙‍  Running database migration wizard');
 
   // Make sure user table exists
-  await Database.raw(
+  await db.rawQuery(
     'CREATE TABLE IF NOT EXISTS `users` (`id` integer not null primary key autoincrement, `settings` text, `created_at` datetime, `updated_at` datetime);',
   );
 
-  const user = await User.find(1);
+  const user = await db.from('users').where('id', 1).first();
   let settings;
   if (user) {
     settings = convertToJSON(user.settings);
@@ -28,7 +29,7 @@ module.exports = async () => {
     migrateLog("🎩  Migrating from old Ferdium version as user doesn't exist");
 
     // Create new user
-    await Database.raw('INSERT INTO  "users" ("id") VALUES (\'1\');');
+    await db.rawQuery('INSERT INTO "users" ("id") VALUES (\'1\');');
   }
 
   if (
@@ -45,10 +46,13 @@ module.exports = async () => {
     // Update version number in database
     if (!settings) settings = {};
     settings.db_version = ferdiumVersion;
-    const newUser = await User.find(1); // Fetch user again as we might have only just created it
-    newUser.settings = JSON.stringify(settings);
-    await newUser.save();
+    await db
+      .from('users')
+      .where('id', 1)
+      .update({ settings: JSON.stringify(settings) });
   } else {
     migrateLog('🔧  Nothing to migrate, already on the newest version');
   }
-};
+}
+
+module.exports = { migrate };

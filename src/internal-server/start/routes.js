@@ -3,126 +3,158 @@
 | Routes
 |--------------------------------------------------------------------------
 |
+| Routes are registered when the app is ready (see `start.ts`). Every guard
+| compares the client token with the one the Electron main process generated
+| for this session.
+|
 */
 
 const { timingSafeEqual } = require('node:crypto');
 
-/** @type {typeof import('@adonisjs/framework/src/Route/Manager')} */
-const Route = use('Route');
-
 const { API_VERSION } = require('../../environment-remote');
-// Run latest database migration
-const migrate = require('./migrate');
+const UserController = require('../app/Controllers/Http/UserController');
+const ServiceController = require('../app/Controllers/Http/ServiceController');
+const WorkspaceController = require('../app/Controllers/Http/WorkspaceController');
+const RecipeController = require('../app/Controllers/Http/RecipeController');
+const ImageController = require('../app/Controllers/Http/ImageController');
+const { renderView } = require('../app/Views');
 
-migrate();
-
-async function validateToken(clientToken, response, next) {
-  const serverToken = process.env.FERDIUM_LOCAL_TOKEN;
-  const valid =
-    serverToken &&
-    clientToken &&
-    timingSafeEqual(
-      Buffer.from(clientToken, 'utf8'),
-      Buffer.from(serverToken, 'utf8'),
-    );
-  if (valid) {
-    await next();
-    return true;
-  }
-  return response.forbidden();
-}
-
-const OnlyAllowFerdium = async ({ request, response }, next) => {
-  const version = request.header('X-Franz-Version');
-  if (!version) {
-    return response.forbidden();
-  }
-
-  const clientToken = request.header('X-Ferdium-Local-Token');
-  return validateToken(clientToken, response, next);
-};
-
-const RequireTokenInQS = async ({ request, response }, next) => {
-  const clientToken = request.get().token;
-  return validateToken(clientToken, response, next);
-};
+// The router resolves `[lazy(Controller), method]` through the app container
+const lazy = Controller => () => Promise.resolve({ default: Controller });
 
 const FERDIUM_LOCAL_TOKEN_COOKIE = 'ferdium-local-token';
 
-const RequireAuthenticatedBrowser = async ({ request, response }, next) => {
-  const clientToken = request.cookie(FERDIUM_LOCAL_TOKEN_COOKIE);
-  return validateToken(clientToken, response, next);
-};
+function isValidToken(clientToken) {
+  const serverToken = process.env.FERDIUM_LOCAL_TOKEN;
+  if (!serverToken || !clientToken) {
+    return false;
+  }
 
-// Health: Returning if all systems function correctly
-Route.get('health', ({ response }) =>
-  response.send({
-    api: 'success',
-    db: 'success',
-  }),
-).middleware(OnlyAllowFerdium);
+  const client = Buffer.from(clientToken, 'utf8');
+  const server = Buffer.from(serverToken, 'utf8');
 
-// API is grouped under '/v1/' route
-Route.group(() => {
-  // User authentication
-  Route.post('auth/signup', 'UserController.signup');
-  Route.post('auth/login', 'UserController.login');
+  // timingSafeEqual throws when the lengths differ
+  return client.length === server.length && timingSafeEqual(client, server);
+}
 
-  // User info
-  Route.get('me', 'UserController.me');
-  Route.put('me', 'UserController.updateMe');
+/**
+ * Creates a middleware that lets the request through only when `readToken`
+ * returns the session token. `requireHeader` is an extra header check.
+ */
+function tokenGuard(readToken, requireHeader) {
+  return async ({ request, response }, next) => {
+    if (requireHeader && !request.header(requireHeader)) {
+      return response.forbidden();
+    }
 
-  // Service info
-  Route.post('service', 'ServiceController.create');
-  Route.put('service/reorder', 'ServiceController.reorder');
-  Route.put('service/:id', 'ServiceController.edit');
-  Route.delete('service/:id', 'ServiceController.delete');
-  Route.get('me/services', 'ServiceController.list');
+    if (!isValidToken(readToken(request))) {
+      return response.forbidden();
+    }
 
-  // Recipe store
-  Route.get('recipes', 'RecipeController.list');
-  Route.get('recipes/search', 'RecipeController.search');
-  Route.get('recipes/popular', 'RecipeController.popularRecipes');
-  Route.get('recipes/download/:recipe', 'RecipeController.download');
-  Route.post('recipes/update', 'RecipeController.update');
+    return next();
+  };
+}
 
-  // Workspaces
-  Route.put('workspace/:id', 'WorkspaceController.edit');
-  Route.delete('workspace/:id', 'WorkspaceController.delete');
-  Route.post('workspace', 'WorkspaceController.create');
-  Route.get('workspace', 'WorkspaceController.list');
-})
-  .prefix(API_VERSION)
-  .middleware(OnlyAllowFerdium);
+// Used by the Electron app's API calls: needs X-Franz-Version and the token header
+const OnlyAllowFerdium = tokenGuard(
+  request => request.header('X-Ferdium-Local-Token'),
+  'X-Franz-Version',
+);
 
-Route.group(() => {
-  Route.get('icon/:id', 'ImageController.icon');
-})
-  .prefix(API_VERSION)
-  .middleware(RequireTokenInQS);
+// Used by image URLs that the renderer loads directly: token in the query string
+const RequireTokenInQS = tokenGuard(request => request.qs().token);
 
-Route.group(() => {
-  // Franz account import
-  Route.post('import', 'UserController.import');
-  Route.get('import', ({ view }) => view.render('import'));
+// Used by the pages opened in the browser: token in an httpOnly cookie
+const RequireAuthenticatedBrowser = tokenGuard(request =>
+  request.cookie(FERDIUM_LOCAL_TOKEN_COOKIE),
+);
 
-  // Account transfer
-  Route.get('export', 'UserController.export');
-  Route.post('transfer', 'UserController.importFerdium');
-  Route.get('transfer', ({ view }) => view.render('transfer'));
+async function registerRoutes(app) {
+  const router = await app.container.make('router');
+  const version = `/${API_VERSION}`;
 
-  // Index
-  Route.get('/', ({ view }) => view.render('index'));
-}).middleware(RequireAuthenticatedBrowser);
+  // Health: returning if all systems function correctly
+  router
+    .get('/health', ({ response }) =>
+      response.send({
+        api: 'success',
+        db: 'success',
+      }),
+    )
+    .use(OnlyAllowFerdium);
 
-Route.get('token/:token', ({ params: { token }, response }) => {
-  if (validateToken(token)) {
-    response.cookie(FERDIUM_LOCAL_TOKEN_COOKIE, token, {
+  // API is grouped under '/v1/' route
+  router
+    .group(() => {
+      // User authentication
+      router.post('auth/signup', [lazy(UserController), 'signup']);
+      router.post('auth/login', [lazy(UserController), 'login']);
+
+      // User info
+      router.get('me', [lazy(UserController), 'me']);
+      router.put('me', [lazy(UserController), 'updateMe']);
+
+      // Service info
+      router.post('service', [lazy(ServiceController), 'create']);
+      router.put('service/reorder', [lazy(ServiceController), 'reorder']);
+      router.put('service/:id', [lazy(ServiceController), 'edit']);
+      router.delete('service/:id', [lazy(ServiceController), 'delete']);
+      router.get('me/services', [lazy(ServiceController), 'list']);
+
+      // Recipe store
+      router.get('recipes', [lazy(RecipeController), 'list']);
+      router.get('recipes/search', [lazy(RecipeController), 'search']);
+      router.get('recipes/popular', [lazy(RecipeController), 'popularRecipes']);
+      router.get('recipes/download/:recipe', [
+        lazy(RecipeController),
+        'download',
+      ]);
+      router.post('recipes/update', [lazy(RecipeController), 'update']);
+
+      // Workspaces
+      router.put('workspace/:id', [lazy(WorkspaceController), 'edit']);
+      router.delete('workspace/:id', [lazy(WorkspaceController), 'delete']);
+      router.post('workspace', [lazy(WorkspaceController), 'create']);
+      router.get('workspace', [lazy(WorkspaceController), 'list']);
+    })
+    .prefix(version)
+    .use(OnlyAllowFerdium);
+
+  router
+    .group(() => {
+      router.get('icon/:id', [lazy(ImageController), 'icon']);
+    })
+    .prefix(version)
+    .use(RequireTokenInQS);
+
+  router
+    .group(() => {
+      // Franz account import
+      router.post('import', [lazy(UserController), 'import']);
+      router.get('import', renderView('import'));
+
+      // Account transfer
+      router.get('export', [lazy(UserController), 'export']);
+      router.post('transfer', [lazy(UserController), 'importFerdium']);
+      router.get('transfer', renderView('transfer'));
+
+      // Index
+      router.get('/', renderView('index'));
+    })
+    .use(RequireAuthenticatedBrowser);
+
+  router.get('token/:token', ({ params, response }) => {
+    if (!isValidToken(params.token)) {
+      return response.forbidden();
+    }
+
+    response.cookie(FERDIUM_LOCAL_TOKEN_COOKIE, params.token, {
       httpOnly: true,
       sameSite: true,
       path: '/',
     });
     return response.redirect('/');
-  }
-  return response.forbidden();
-});
+  });
+}
+
+module.exports = { registerRoutes, isValidToken };

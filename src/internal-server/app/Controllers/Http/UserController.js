@@ -1,35 +1,24 @@
-/* eslint-disable no-await-in-loop, unicorn/no-await-expression-member */
-const User = use('App/Models/User');
-const Service = use('App/Models/Service');
-const Workspace = use('App/Models/Workspace');
-const { validateAll } = use('Validator');
-
 const crypto = require('node:crypto');
 const { v4: uuid } = require('uuid');
 const { DEFAULT_APP_SETTINGS } = require('../../../../config');
 const { convertToJSON } = require('../../../../jsUtils');
 const { API_VERSION } = require('../../../../environment-remote');
 const { default: userAgent } = require('../../../../helpers/userAgent-helpers');
+const { getDb, newUnusedId } = require('../../Database');
+const { validateInput } = require('../../Validation');
 
-const apiRequest = (url, route, method, auth) =>
-  new Promise((resolve, reject) => {
-    try {
-      fetch(`${url}/${API_VERSION}/${route}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${auth}`,
-          'User-Agent': userAgent(),
-        },
-      })
-        .then(data => data.json())
-        .then(json => resolve(json));
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.log(error);
-      reject();
-    }
+async function apiRequest(url, route, method, auth) {
+  const response = await fetch(`${url}/${API_VERSION}/${route}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${auth}`,
+      'User-Agent': userAgent(),
+    },
   });
+  return response.json();
+}
 
+// The local server does not validate credentials: any login gets this token
 const LOGIN_SUCCESS_TOKEN =
   'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJGZXJkaSBJbnRlcm5hbCBTZXJ2ZXIiLCJpYXQiOjE1NzEwNDAyMTUsImV4cCI6MjUzMzk1NDE3ODQ0LCJhdWQiOiJnZXRmZXJkaS5jb20iLCJzdWIiOiJmZXJkaUBsb2NhbGhvc3QiLCJ1c2VySWQiOiIxIn0.9_TWFGp6HROv8Yg82Rt6i1-95jqWym40a-HmgrdMC6M';
 
@@ -49,16 +38,17 @@ const DEFAULT_USER_DATA = {
 class UserController {
   // Register a new user
   async signup({ request, response }) {
-    // Validate user input
-    const validation = await validateAll(request.all(), {
-      firstname: 'required',
-      email: 'required|email',
-      password: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        firstname: vine.string(),
+        email: vine.string().email(),
+        password: vine.string(),
+      });
+    }, request.all());
+    if (!validation.valid) {
       return response.status(401).send({
         message: 'Invalid POST arguments',
-        messages: validation.messages(),
+        messages: validation.messages,
         status: 401,
       });
     }
@@ -86,7 +76,8 @@ class UserController {
 
   // Return information about the current user
   async me({ response }) {
-    const user = await User.find(1);
+    const db = await getDb();
+    const user = await db.from('users').where('id', 1).first();
 
     const settings = convertToJSON(user.settings);
 
@@ -97,7 +88,8 @@ class UserController {
   }
 
   async updateMe({ request, response }) {
-    const user = await User.find(1);
+    const db = await getDb();
+    const user = await db.from('users').where('id', 1).first();
 
     const settings = convertToJSON(user.settings || {});
 
@@ -106,8 +98,10 @@ class UserController {
       ...request.all(),
     };
 
-    user.settings = JSON.stringify(newSettings);
-    await user.save();
+    await db
+      .from('users')
+      .where('id', 1)
+      .update({ settings: JSON.stringify(newSettings) });
 
     return response.send({
       data: {
@@ -120,22 +114,21 @@ class UserController {
 
   async import({ request, response }) {
     // Validate user input
-    const validation = await validateAll(request.all(), {
-      email: 'required|email',
-      password: 'required',
-      server: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        email: vine.string().email(),
+        password: vine.string(),
+        server: vine.string(),
+      });
+    }, request.all());
+    if (!validation.valid) {
       let errorMessage =
         'There was an error while trying to import your account:\n';
-      for (const message of validation.messages()) {
-        if (message.validation === 'required') {
-          errorMessage += `- Please make sure to supply your ${message.field}\n`;
-        } else if (message.validation === 'unique') {
-          errorMessage += '- There is already a user with this email.\n';
-        } else {
-          errorMessage += `${message.message}\n`;
-        }
+      for (const message of validation.messages) {
+        errorMessage +=
+          message.rule === 'required'
+            ? `- Please make sure to supply your ${message.field}\n`
+            : `${message.message}\n`;
       }
       return response.status(401).send(errorMessage);
     }
@@ -173,7 +166,7 @@ class UserController {
     } catch (error) {
       return response.status(401).send({
         message: 'Cannot login to Franz',
-        error,
+        error: String(error),
       });
     }
 
@@ -198,6 +191,7 @@ class UserController {
       const services = await apiRequest(server, 'me/services', 'GET', token);
 
       for (const service of services) {
+        // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
         await this._createAndCacheService(service, serviceIdTranslation);
       }
     } catch (error) {
@@ -210,6 +204,7 @@ class UserController {
       const workspaces = await apiRequest(server, 'workspace', 'GET', token);
 
       for (const workspace of workspaces) {
+        // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
         await this._createWorkspace(workspace, serviceIdTranslation);
       }
     } catch (error) {
@@ -224,10 +219,9 @@ class UserController {
 
   // Account import/export
   async export({ response }) {
-    const allServices = await Service.all();
-    const services = allServices.toJSON();
-    const allWorkspaces = await Workspace.all();
-    const workspaces = allWorkspaces.toJSON();
+    const db = await getDb();
+    const services = await db.from('services');
+    const workspaces = await db.from('workspaces');
 
     const exportData = {
       username: 'Ferdium',
@@ -243,11 +237,13 @@ class UserController {
   }
 
   async importFerdium({ request, response }) {
-    const validation = await validateAll(request.all(), {
-      file: 'required',
-    });
-    if (validation.fails()) {
-      return response.send(validation.messages());
+    const validation = await validateInput(vine => {
+      return vine.object({
+        file: vine.string(),
+      });
+    }, request.all());
+    if (!validation.valid) {
+      return response.send(validation.messages);
     }
 
     let file;
@@ -270,6 +266,7 @@ class UserController {
     // Import services
     try {
       for (const service of file.services) {
+        // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
         await this._createAndCacheService(service, serviceIdTranslation);
       }
     } catch (error) {
@@ -280,6 +277,7 @@ class UserController {
     // Import workspaces
     try {
       for (const workspace of file.workspaces) {
+        // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
         await this._createWorkspace(workspace, serviceIdTranslation);
       }
     } catch (error) {
@@ -291,13 +289,8 @@ class UserController {
   }
 
   async _createWorkspace(workspace, serviceIdTranslation) {
-    let newWorkspaceId;
-    do {
-      newWorkspaceId = uuid();
-    } while (
-      (await Workspace.query().where('workspaceId', newWorkspaceId).fetch())
-        .rows.length > 0
-    );
+    const db = await getDb();
+    const workspaceId = await newUnusedId('workspaces', 'workspaceId', uuid);
 
     if (workspace.services) {
       // eslint-disable-next-line no-param-reassign
@@ -314,8 +307,8 @@ class UserController {
       workspace.data = convertToJSON(workspace.data);
     }
 
-    await Workspace.create({
-      workspaceId: newWorkspaceId,
+    await db.table('workspaces').insert({
+      workspaceId,
       name: workspace.name,
       order: workspace.order,
       services: JSON.stringify(services),
@@ -324,14 +317,9 @@ class UserController {
   }
 
   async _createAndCacheService(service, serviceIdTranslation) {
+    const db = await getDb();
     // Get new, unused uuid
-    let newServiceId;
-    do {
-      newServiceId = uuid();
-    } while (
-      (await Service.query().where('serviceId', newServiceId).fetch()).rows
-        .length > 0
-    );
+    const newServiceId = await newUnusedId('services', 'serviceId', uuid);
 
     // store the old serviceId as the key for future lookup
     // eslint-disable-next-line no-param-reassign
@@ -342,7 +330,7 @@ class UserController {
       service.settings = convertToJSON(service.settings);
     }
 
-    await Service.create({
+    await db.table('services').insert({
       serviceId: newServiceId,
       name: service.name,
       recipeId: service.recipeId,

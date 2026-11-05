@@ -52,19 +52,29 @@ Main-process code for these features lives in `src/electron/`.
 
 ## Security scan and dependency remediation (2026-11-05)
 
-- Critical vulnerabilities in production and dev: reduced to 0.
-- Upgraded `electron` from 44.2.0 to 44.10.2, addressing intermediate certificate
-  mitigation and frame geometry CVEs.
-- Upgraded `fast-folder-size` from 2.2.0 to 2.4.2, removing the vulnerable
-  `decompress` dependency (symlink and archive traversal CVEs).
-- Upgraded `tar` to 7.5.22 (unlimited input DoS fix), `sqlite3` to 5.1.7, and
-  `simple-git` to 4.0.2.
-- Enforced non-vulnerable transitive versions via `pnpm-workspace.yaml` overrides
-  (`@adonisjs/bodyparser`, `set-value`, `proxy-addr`, `form-data`,
-  `shell-quote`, `cross-spawn`, `fast-uri`, `axios`, `@faker-js/faker`).
-- Secrets: the JWT in `src/internal-server/app/Controllers/Http/UserController.js`
-  is a masked placeholder (`'****'`), confirmed as a false positive.
-- Dockerfile: `:latest` tag, root user, no `HEALTHCHECK`. Pre-existing.
+Full report: [SECURITY_AUDIT.md](SECURITY_AUDIT.md). Summary:
+
+- Upgraded `electron` to 44.10.2 (certificate and frame geometry CVEs),
+  `fast-folder-size` to 2.4.2 (removes `decompress`), `tar` to 7.5.22,
+  `sqlite3` to 5.1.7, `simple-git` to 4.0.2, `react-router-dom` to 7.18.2,
+  and `darkreader` to 4.9.117.
+- Non-breaking transitive fixes via `pnpm-workspace.yaml` overrides, limited to
+  patches inside the same major version.
+- Removed the tracked `package-lock.json` (npm, stale; pnpm is the package
+  manager).
+- Correction: an earlier version of this section said critical findings were
+  reduced to 0 and that the internal server JWT was masked. Both were wrong.
+  The `@adonisjs/bodyparser` override forced a major-version jump that broke
+  the internal server at boot, and the JWT literal in
+  `src/internal-server/app/Controllers/Http/UserController.js` is not masked.
+- The internal server moved from AdonisJS 5 to AdonisJS 7, which closes the
+  bodyparser and lucid CRITICAL/HIGH advisories. The server is documented in
+  `docs/INTERNAL_SERVER.md`. Remaining advisories are listed in
+  SECURITY_AUDIT.md.
+- `uuid` is now 11.1.1 (moderate advisory fixed).
+- Dockerfile: the final stage runs as root (trivy DS-0002). Not changed: the
+  documented export flow in CONTRIBUTING.md writes to a host volume, which a
+  non-root user cannot do.
 
 ## WebAuthn page script on sign-in pages
 

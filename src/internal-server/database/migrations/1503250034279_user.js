@@ -1,17 +1,16 @@
-/** @type {import('@adonisjs/lucid/src/Schema')} */
-const Schema = use('Schema');
+const { BaseSchema } = require('@adonisjs/lucid/schema');
 
-class UserSchema extends Schema {
-  up() {
-    this.create('users', table => {
-      table.increments();
+class UserSchema extends BaseSchema {
+  async up() {
+    this.schema.createTable('users', table => {
+      table.increments('id');
       table.json('settings');
-      table.timestamps();
+      table.timestamps(true);
     });
   }
 
-  down() {
-    this.drop('users');
+  async down() {
+    this.schema.dropTable('users');
   }
 }
 

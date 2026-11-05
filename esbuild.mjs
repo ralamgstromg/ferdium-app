@@ -24,12 +24,6 @@ const staticAssets = () => [
   }),
   copy({
     assets: {
-      from: ['./src/internal-server/ace'],
-      to: ['./internal-server'],
-    },
-  }),
-  copy({
-    assets: {
       from: ['./recipes/archives/*.tar.gz'],
       to: ['./recipes'],
     },

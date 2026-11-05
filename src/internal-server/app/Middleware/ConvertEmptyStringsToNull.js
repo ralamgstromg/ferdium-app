@@ -1,10 +1,18 @@
+/**
+ * Converts empty string values in the request body to null.
+ */
 class ConvertEmptyStringsToNull {
   async handle({ request }, next) {
-    if (Object.keys(request.body).length > 0) {
-      request.body = Object.assign(
-        ...Object.keys(request.body).map(key => ({
-          [key]: request.body[key] === '' ? null : request.body[key],
-        })),
+    const body = request.body();
+
+    if (body && Object.keys(body).length > 0) {
+      request.updateBody(
+        Object.fromEntries(
+          Object.entries(body).map(([key, value]) => [
+            key,
+            value === '' ? null : value,
+          ]),
+        ),
       );
     }
 

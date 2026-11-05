@@ -424,3 +424,6 @@ graphify-out/.graphify_root
 graphify-out/cache/
 graphify-out/manifest.json
 graphify-out/graph.json
+
+# npm lockfile is not used (pnpm is the package manager)
+package-lock.json

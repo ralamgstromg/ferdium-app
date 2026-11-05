@@ -1,51 +1,28 @@
-/** @type {import('@adonisjs/framework/src/Server')} */
-const Server = use('Server');
-
 /*
 |--------------------------------------------------------------------------
-| Global Middleware
+| Kernel
 |--------------------------------------------------------------------------
 |
-| Global middleware are executed on each http request only when the routes
-| match.
+| Global middleware. Router middleware runs only when a route matches, server
+| middleware runs for every request (static files need this).
 |
 */
-const globalMiddleware = [
-  'Adonis/Middleware/BodyParser',
-  'App/Middleware/ConvertEmptyStringsToNull',
-];
 
-/*
-|--------------------------------------------------------------------------
-| Named Middleware
-|--------------------------------------------------------------------------
-|
-| Named middleware is key/value object to conditionally add middleware on
-| specific routes or group of routes.
-|
-| // define
-| {
-|   auth: 'Adonis/Middleware/Auth'
-| }
-|
-| // use
-| Route.get().middleware('auth')
-|
-*/
-const namedMiddleware = {};
+const {
+  BodyParserMiddleware,
+} = require('@adonisjs/bodyparser/bodyparser_middleware');
+const ConvertEmptyStringsToNull = require('../app/Middleware/ConvertEmptyStringsToNull');
+const StaticFiles = require('../app/Middleware/StaticFiles');
 
-/*
-|--------------------------------------------------------------------------
-| Server Middleware
-|--------------------------------------------------------------------------
-|
-| Server level middleware are executed even when route for a given URL is
-| not registered. Features like `static assets` and `cors` needs better
-| control over request lifecycle.
-|
-*/
-const serverMiddleware = ['Adonis/Middleware/Static'];
+// Global middleware is passed as lazy imports (`() => ({ default: Class })`)
+const lazy = Middleware => () => Promise.resolve({ default: Middleware });
 
-Server.registerGlobal(globalMiddleware)
-  .registerNamed(namedMiddleware)
-  .use(serverMiddleware);
+async function registerKernel(app) {
+  const router = await app.container.make('router');
+  const server = await app.container.make('server');
+
+  router.use([lazy(BodyParserMiddleware), lazy(ConvertEmptyStringsToNull)]);
+  server.use([lazy(StaticFiles)]);
+}
+
+module.exports = { registerKernel };

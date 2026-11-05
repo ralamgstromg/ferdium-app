@@ -1,6 +1,6 @@
-@layout('layouts.main')
+@component('layouts/main')
 
-@section('content')
+@slot('content')
 <h2>Import/Export data from another Ferdium server</h2>
 @if(success === true)
     <div class="alert" style="background-color:#28C76F;">
@@ -29,4 +29,5 @@
 </div>
 <script src="/js/transfer.js"></script>
 
-@endsection
+@endslot
+@end

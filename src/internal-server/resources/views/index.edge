@@ -1,6 +1,6 @@
-@layout('layouts.main')
+@component('layouts/main')
 
-@section('content')
+@slot('content')
 <style>
   ol,
   p {
@@ -16,4 +16,5 @@
 <p>
   Alternatively, you can <a href="/import">import your account from a remote server</a> or <a href="/transfer">import your data from a ".ferdium-data" or ".ferdi-data" file</a> or <a href="/transfer">export your data to a ".ferdium-data" file</a>.
 </p>
-@endsection
+@endslot
+@end

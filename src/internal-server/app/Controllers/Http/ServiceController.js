@@ -1,6 +1,3 @@
-const Service = use('App/Models/Service');
-const { validateAll } = use('Validator');
-
 const { v4: uuid } = require('uuid');
 const {
   DEFAULT_SERVICE_ORDER,
@@ -8,6 +5,41 @@ const {
 } = require('../../../../config');
 const { convertToJSON } = require('../../../../jsUtils');
 const { deduceIconUrl, moveIcon } = require('../../ImageHelper');
+const { getDb, newUnusedId } = require('../../Database');
+const { validateInput } = require('../../Validation');
+
+/**
+ * Converts a `services` row to the shape the Ferdium client expects.
+ * `hasCustomIconDefault` keeps the default that each endpoint used before.
+ */
+function toClientService(service, hasCustomIconDefault) {
+  const settings = convertToJSON(service.settings);
+
+  return {
+    customRecipe: false,
+    hasCustomIcon: hasCustomIconDefault,
+    isBadgeEnabled: DEFAULT_SERVICE_SETTINGS.isBadgeEnabled,
+    trapLinkClicks: DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
+    isAdBlockerEnabled: DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
+    useFavicon: DEFAULT_SERVICE_SETTINGS.useFavicon,
+    isDarkModeEnabled: '', // TODO: This should ideally be a boolean (false). But, changing it caused the sidebar toggle to not work.
+    isProgressbarEnabled: DEFAULT_SERVICE_SETTINGS.isProgressbarEnabled,
+    isEnabled: DEFAULT_SERVICE_SETTINGS.isEnabled,
+    isMuted: DEFAULT_SERVICE_SETTINGS.isMuted,
+    isNotificationEnabled: DEFAULT_SERVICE_SETTINGS.isNotificationEnabled,
+    order: DEFAULT_SERVICE_ORDER,
+    spellcheckerLanguage: '',
+    workspaces: [],
+    // Overwrite previous default settings with what's obtained from the db
+    ...settings,
+    // Overwrite even after the spread operator with specific values
+    iconUrl: deduceIconUrl(settings.iconId),
+    id: service.serviceId,
+    name: service.name,
+    recipeId: service.recipeId,
+    userId: 1,
+  };
+}
 
 class ServiceController {
   // Create a new service for user
@@ -15,29 +47,24 @@ class ServiceController {
     const data = request.all();
 
     // Validate user input
-    const validation = await validateAll(data, {
-      name: 'required|string',
-      recipeId: 'required',
-    });
-    if (validation.fails()) {
+    const validation = await validateInput(vine => {
+      return vine.object({
+        name: vine.string(),
+        recipeId: vine.string(),
+      });
+    }, data);
+    if (!validation.valid) {
       return response.status(401).send({
         message: 'Invalid POST arguments',
-        messages: validation.messages(),
+        messages: validation.messages,
         status: 401,
       });
     }
 
-    // Get new, unused uuid
-    let serviceId;
-    do {
-      serviceId = uuid();
-    } while (
-      // eslint-disable-next-line no-await-in-loop, unicorn/no-await-expression-member
-      (await Service.query().where('serviceId', serviceId).fetch()).rows
-        .length > 0
-    );
+    const db = await getDb();
+    const serviceId = await newUnusedId('services', 'serviceId', uuid);
 
-    await Service.create({
+    await db.table('services').insert({
       serviceId,
       name: data.name,
       recipeId: data.recipeId,
@@ -73,58 +100,32 @@ class ServiceController {
 
   // List all services a user has created
   async list({ response }) {
-    const allServices = await Service.all();
-    const services = allServices.rows;
-    // Convert to array with all data Franz wants
-    const servicesArray = services.map(service => {
-      const settings = convertToJSON(service.settings);
+    const db = await getDb();
+    const services = await db.from('services');
 
-      // TODO: Remove duplication
-      return {
-        customRecipe: false,
-        hasCustomIcon: DEFAULT_SERVICE_SETTINGS.hasCustomIcon,
-        isBadgeEnabled: DEFAULT_SERVICE_SETTINGS.isBadgeEnabled,
-        trapLinkClicks: DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
-        isAdBlockerEnabled: DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
-        useFavicon: DEFAULT_SERVICE_SETTINGS.useFavicon,
-        isDarkModeEnabled: '', // TODO: This should ideally be a boolean (false). But, changing it caused the sidebar toggle to not work.
-        isProgressbarEnabled: DEFAULT_SERVICE_SETTINGS.isProgressbarEnabled,
-        isEnabled: DEFAULT_SERVICE_SETTINGS.isEnabled,
-        isMuted: DEFAULT_SERVICE_SETTINGS.isMuted,
-        isNotificationEnabled: DEFAULT_SERVICE_SETTINGS.isNotificationEnabled,
-        order: DEFAULT_SERVICE_ORDER,
-        spellcheckerLanguage: '',
-        workspaces: [],
-        // Overwrite previous default settings with what's obtained from the db
-        ...settings,
-        // Overwrite even after the spread operator with specific values
-        iconUrl: deduceIconUrl(settings.iconId),
-        id: service.serviceId,
-        name: service.name,
-        recipeId: service.recipeId,
-        userId: 1,
-      };
-    });
-
-    return response.send(servicesArray);
+    return response.send(
+      services.map(service =>
+        toClientService(service, DEFAULT_SERVICE_SETTINGS.hasCustomIcon),
+      ),
+    );
   }
 
   async edit({ request, response, params }) {
-    // Upload custom service icon if present
-    if (request.file('icon')) {
-      const { id } = params;
-      const serviceQuery = await Service.query().where('serviceId', id).fetch();
-      const service = serviceQuery.rows[0];
-      const settings = convertToJSON(service.settings);
+    const db = await getDb();
 
-      const icon = request.file('icon', {
-        types: ['image'],
-        size: '2mb',
-      });
+    // Upload custom service icon if present
+    const icon = request.file('icon', {
+      extnames: ['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'webp'],
+      size: '2mb',
+    });
+    if (icon) {
+      const { id } = params;
+      const service = await db.from('services').where('serviceId', id).first();
+      const settings = convertToJSON(service.settings);
 
       const iconId = await moveIcon(icon);
       if (iconId === '-1') {
-        return response.status(500).send(icon.error());
+        return response.status(500).send(icon.errors);
       }
 
       const newSettings = {
@@ -136,7 +137,8 @@ class ServiceController {
       };
 
       // Update data in database
-      await Service.query()
+      await db
+        .from('services')
         .where('serviceId', id)
         .update({
           name: service.name,
@@ -160,8 +162,10 @@ class ServiceController {
     const { id } = params;
 
     // Get current settings from db
-    const serviceQuery = await Service.query().where('serviceId', id).fetch();
-    const serviceData = serviceQuery.rows[0];
+    const serviceData = await db
+      .from('services')
+      .where('serviceId', id)
+      .first();
 
     if (data.customIcon === 'delete') {
       data.iconId = '';
@@ -173,7 +177,8 @@ class ServiceController {
     };
 
     // Update data in database
-    await Service.query()
+    await db
+      .from('services')
       .where('serviceId', id)
       .update({
         name: data.name,
@@ -181,10 +186,7 @@ class ServiceController {
       });
 
     // Get updated row
-    const anotherServiceQuery = await Service.query()
-      .where('serviceId', id)
-      .fetch();
-    const service = anotherServiceQuery.rows[0];
+    const service = await db.from('services').where('serviceId', id).first();
 
     return response.send({
       data: {
@@ -199,16 +201,16 @@ class ServiceController {
   }
 
   async reorder({ request, response }) {
+    const db = await getDb();
     const data = request.all();
 
     for (const service of Object.keys(data)) {
       // Get current settings from db
-      // eslint-disable-next-line no-await-in-loop
-      const serviceQuery = await Service.query()
+      // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
+      const serviceData = await db
+        .from('services')
         .where('serviceId', service)
-        .fetch();
-
-      const serviceData = serviceQuery.rows[0];
+        .first();
 
       const settings = {
         ...convertToJSON(serviceData.settings),
@@ -216,7 +218,9 @@ class ServiceController {
       };
 
       // Update data in database
-      await Service.query() // eslint-disable-line no-await-in-loop
+      // eslint-disable-next-line no-await-in-loop -- sequential writes keep the import order
+      await db
+        .from('services')
         .where('serviceId', service)
         .update({
           settings: JSON.stringify(settings),
@@ -224,45 +228,20 @@ class ServiceController {
     }
 
     // Get new services
-    const allServices = await Service.all();
-    const services = allServices.rows;
-    // Convert to array with all data Franz wants
-    const servicesArray = services.map(service => {
-      const settings = convertToJSON(service.settings);
+    const services = await db.from('services');
 
-      // TODO: Remove duplication
-      return {
-        customRecipe: false,
-        hasCustomIcon: DEFAULT_SERVICE_SETTINGS.customIcon,
-        isBadgeEnabled: DEFAULT_SERVICE_SETTINGS.isBadgeEnabled,
-        trapLinkClicks: DEFAULT_SERVICE_SETTINGS.trapLinkClicks,
-        isAdBlockerEnabled: DEFAULT_SERVICE_SETTINGS.isAdBlockerEnabled,
-        useFavicon: DEFAULT_SERVICE_SETTINGS.useFavicon,
-        isDarkModeEnabled: '', // TODO: This should ideally be a boolean (false). But, changing it caused the sidebar toggle to not work.
-        isProgressbarEnabled: DEFAULT_SERVICE_SETTINGS.isProgressbarEnabled,
-        isEnabled: DEFAULT_SERVICE_SETTINGS.isEnabled,
-        isMuted: DEFAULT_SERVICE_SETTINGS.isMuted,
-        isNotificationEnabled: DEFAULT_SERVICE_SETTINGS.isNotificationEnabled,
-        order: DEFAULT_SERVICE_ORDER,
-        spellcheckerLanguage: '',
-        workspaces: [],
-        // Overwrite previous default settings with what's obtained from the db
-        ...settings,
-        // Overwrite even after the spread operator with specific values
-        iconUrl: deduceIconUrl(settings.iconId),
-        id: service.serviceId,
-        name: service.name,
-        recipeId: service.recipeId,
-        userId: 1,
-      };
-    });
-
-    return response.send(servicesArray);
+    return response.send(
+      services.map(service =>
+        toClientService(service, DEFAULT_SERVICE_SETTINGS.customIcon),
+      ),
+    );
   }
 
   async delete({ params, response }) {
+    const db = await getDb();
+
     // Update data in database
-    await Service.query().where('serviceId', params.id).delete();
+    await db.from('services').where('serviceId', params.id).delete();
 
     return response.send({
       message: 'Sucessfully deleted service',

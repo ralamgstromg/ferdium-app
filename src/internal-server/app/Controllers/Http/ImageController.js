@@ -1,5 +1,3 @@
-const Env = use('Env');
-
 const path = require('node:path');
 const fs = require('fs-extra');
 const sanitize = require('sanitize-filename');
@@ -15,7 +13,7 @@ class ImageController {
       });
     }
 
-    const iconPath = path.join(Env.get('USER_PATH'), 'icons', id);
+    const iconPath = path.join(process.env.USER_PATH, 'icons', id);
 
     try {
       await fs.access(iconPath);
