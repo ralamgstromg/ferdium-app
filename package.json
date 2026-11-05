@@ -63,6 +63,8 @@
     "@electron/remote": "2.1.2",
     "@emotion/react": "11.13.3",
     "@emotion/styled": "11.13.0",
+    "@ghostery/adblocker-electron": "2.20.3",
+    "@ghostery/adblocker-electron-preload": "2.20.3",
     "@mdi/js": "7.4.47",
     "@mdi/react": "1.6.1",
     "@mui/icons-material": "5.16.7",

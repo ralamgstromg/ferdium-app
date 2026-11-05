@@ -20,6 +20,10 @@ import minimist from 'minimist';
 import ms from 'ms';
 import { enableWebContents, initializeRemote } from './electron-util';
 import { setServiceAdBlock, watchAdPlaceholders } from './electron/adBlocker';
+import {
+  attachExtensions,
+  registerExtensionHandlers,
+} from './electron/extensions';
 import enforceMacOSAppLocation from './enforce-macos-app-location';
 
 initializeRemote();
@@ -298,6 +302,7 @@ const createWindow = () => {
     if (contents.getType() === 'webview') {
       enableWebContents(contents);
       watchAdPlaceholders(contents);
+      attachExtensions(contents.session);
 
       // Set permission handlers on service webview sessions.
       // setPermissionRequestHandler allows safe permissions and denies unknown ones.
@@ -878,12 +883,14 @@ ipcMain.on('stop-find-in-page', (e, action) => {
   e.returnValue = null;
 });
 
+registerExtensionHandlers();
+
 ipcMain.handle('set-service-adblock', async (_e, { serviceId, enabled }) => {
   if (serviceId === undefined) {
     return;
   }
   try {
-    await setServiceAdBlock(serviceId, !!enabled);
+    setServiceAdBlock(serviceId, !!enabled);
   } catch (error) {
     debug(error);
   }

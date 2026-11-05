@@ -82,7 +82,7 @@ export default class FeaturesStore extends TypedStore {
 
   _setupFeatures(): void {
     serviceProxy(this.stores);
-    adBlocker(this.stores, this.actions);
+    adBlocker(this.stores);
     basicAuth();
     workspaces(this.stores, this.actions);
     quickSwitch();

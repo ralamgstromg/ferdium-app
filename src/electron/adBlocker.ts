@@ -1,167 +1,34 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { Notification, type WebContents, session } from 'electron';
+import { ElectronBlocker } from '@ghostery/adblocker-electron';
+import { Notification, type WebContents, ipcMain, session } from 'electron';
 import { userDataPath } from '../environment-remote';
 import {
   AD_PLACEHOLDER_CLEANUP_SCRIPT,
   OUTLOOK_HOSTS,
 } from './adPlaceholderCleanup';
+import { YOUTUBE_AD_SKIP_SCRIPT, YOUTUBE_HOSTS } from './youtubeAds';
 
 const debug = require('../preload-safe-debug')('Ferdium:adBlocker');
 
-const sessionsWithBlocking = new WeakSet<Electron.Session>();
+const PRELOAD_PATH = require.resolve('@ghostery/adblocker-electron-preload');
 
-let blockedHostsPromise: Promise<Set<string> | undefined> | undefined;
+const CACHE_PATH = userDataPath('adblocker-engine.bin');
 
-const CACHE_PATH = userDataPath('adblocker-hosts.txt');
-
-// Public ad/tracker domain lists (hosts and AdGuard `||domain^` formats).
-const HOST_LISTS = [
-  'https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext',
-  'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
-  'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt',
-  'https://adaway.org/hosts.txt',
-  'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt',
-  'https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt',
-  'https://big.oisd.nl/domainswild2',
-  'https://o0.pages.dev/Lite/hosts.txt',
-  'https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt',
-  'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt',
-  'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt',
-  'https://s3.amazonaws.com/lists.disconnect.me/simple_malvertising.txt',
-  'https://easylist.to/easylist/easylist.txt',
-  'https://easylist.to/easylist/easyprivacy.txt',
-  'https://easylist-downloads.adblockplus.org/easylistspanish.txt',
-];
-
-const HOSTNAME = /^[\da-z]([\d.a-z-]*[\da-z])?$/;
-
-// `||host^` rules, optionally limited to third-party requests, which block a
-// whole domain. Rules with paths or other options need a full filter engine.
-const ABP_DOMAIN_RULE = /^\|\|([^$*/^|]+)\^(?:\$(?:third-party|3p|all))?$/;
-
-// Extracts the blocked hostname from one list line, if it has one:
-// `0.0.0.0 host`, `127.0.0.1 host`, `||host^` or a bare `host`.
-const parseLine = (rawLine: string): string | undefined => {
-  // Only whole-line or space-preceded `#` starts a comment; `host##.ad` is a
-  // cosmetic rule and must not turn into a blocked host.
-  const line = rawLine
-    .replace(/(^|\s)#.*$/, '')
-    .trim()
-    .toLowerCase();
-  const candidate = line.startsWith('||')
-    ? ABP_DOMAIN_RULE.exec(line)?.[1]
-    : line.split(/\s+/).pop();
-  return candidate?.includes('.') &&
-    candidate !== 'localhost.localdomain' &&
-    HOSTNAME.test(candidate)
-    ? candidate
-    : undefined;
-};
-
-const parseLists = (lists: string[]): Set<string> => {
-  const hosts = new Set<string>();
-  for (const list of lists) {
-    for (const line of list.split('\n')) {
-      const host = parseLine(line);
-      if (host) {
-        hosts.add(host);
-      }
-    }
-  }
-  return hosts;
-};
-
-const fetchList = async (url: string): Promise<string> => {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return await response.text();
-  } catch (error) {
-    // A list that cannot be fetched is skipped instead of failing the sync.
-    debug('Skipping filter list', url, error);
-    return '';
-  }
-};
-
-const notifySyncSuccess = (count: number) => {
-  debug(`Ad blocker lists synced: ${count} records`);
-  if (Notification.isSupported()) {
-    new Notification({
-      title: 'Ad and tracker blocker',
-      body: `Filter lists synced successfully: ${count.toLocaleString()} records.`,
-      silent: true,
-    }).show();
-  }
-};
-
-const syncHosts = async (): Promise<Set<string>> => {
-  const hosts = parseLists(
-    await Promise.all(HOST_LISTS.map(url => fetchList(url))),
-  );
-  if (hosts.size === 0) {
-    throw new Error('No filter list could be downloaded');
-  }
-  await writeFile(CACHE_PATH, [...hosts].join('\n'));
-  notifySyncSuccess(hosts.size);
-  return hosts;
-};
-
-const readCachedHosts = async (): Promise<Set<string>> => {
-  const content = await readFile(CACHE_PATH, 'utf8');
-  return new Set(content.split('\n'));
-};
-
-// The blocklist is shared by every service session and is rebuilt from the
-// public lists on every app start; if that fails the last cache is used.
-const loadBlockedHosts = async (): Promise<Set<string> | undefined> => {
-  try {
-    return await syncHosts();
-  } catch (error) {
-    debug('Could not refresh ad blocker lists', error);
-  }
-  try {
-    return await readCachedHosts();
-  } catch (error) {
-    // Degrade to "no blocking" and retry on the next request.
-    debug('Could not load ad blocker lists', error);
-    blockedHostsPromise = undefined;
-    return undefined;
-  }
-};
-
-// Empty but valid responses per resource type. Types that cannot be answered
-// meaningfully (pings, media, websockets, ...) are cancelled instead.
-const STUB_RESPONSES: Record<string, string> = {
-  script: 'data:text/javascript,',
-  stylesheet: 'data:text/css,',
-  image:
-    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
-  subFrame: 'data:text/html,',
-  xhr: 'data:application/json,{}',
-  other: 'data:text/plain,',
-};
+// How long a request or cosmetic query waits for the lists. After that it goes
+// through unfiltered, so a stalled download cannot freeze a page.
+const ENGINE_WAIT_MS = 15_000;
 
 // Sign-in pages of identity providers verify the browser with scripts and
-// telemetry calls that the lists also contain; filtering them makes the
+// telemetry calls that the filter lists also contain; filtering them makes the
 // provider reject the login ("this browser may not be secure").
-const AUTH_PAGE_HOSTS = new Set([
+const AUTH_PAGE_HOSTS = [
   'accounts.google.com',
   'accounts.youtube.com',
   'login.live.com',
   'login.microsoftonline.com',
   'appleid.apple.com',
   'idmsa.apple.com',
-]);
-
-const isAuthPage = (url: string): boolean => {
-  try {
-    return AUTH_PAGE_HOSTS.has(new URL(url).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
-};
+];
 
 // Hosts that appear in the lists but are used by the Google account UI and
 // sign-in checks; answering them with empty responses makes Google flag the
@@ -174,68 +41,175 @@ const NEVER_BLOCK_HOSTS = [
   'smartlock.google.com',
 ];
 
-const isBlocked = (hosts: Set<string>, url: string): boolean => {
-  let hostname: string;
+// Exception rules win over any block rule, whatever list they come from.
+const EXCEPTION_RULES = [
+  `@@||*$domain=${AUTH_PAGE_HOSTS.join('|')}`,
+  ...NEVER_BLOCK_HOSTS.map(host => `@@||${host}^`),
+];
+
+// YouTube serves ads inside the player response JSON, which network rules do
+// not match. json-prune removes those fields before the page reads them. The
+// lists only carry the fetch-level rules for www.youtube.com, so YouTube Music
+// gets its own copies (same scriptlets as the lists' www rules).
+const YOUTUBE_RULES = [
+  'youtube.com##+js(json-prune, playerResponse.adPlacements playerResponse.playerAds adPlacements playerAds)',
+  'music.youtube.com##+js(trusted-replace-fetch-response, "adPlacements", "no_ads", player?)',
+  'music.youtube.com##+js(trusted-replace-fetch-response, "adSlots", "no_ads", /^\\W+$/)',
+  'music.youtube.com##+js(json-prune-fetch-response, playerAds adPlacements adSlots no_ads playerResponse.playerAds playerResponse.adPlacements playerResponse.adSlots playerResponse.no_ads, , propsToMatch, /player\\?|get_watch|^\\W+$/)',
+];
+
+// Ghostery downloads its maintained ads and tracking lists (EasyList,
+// EasyPrivacy, uBlock Origin filters) on each start. The download is
+// all-or-nothing, so if it fails the last serialized engine is used instead.
+const loadBlocker = async (): Promise<ElectronBlocker | undefined> => {
   try {
-    ({ hostname } = new URL(url));
-  } catch {
-    return false;
-  }
-  // Match the host and every parent domain (a.b.example.com -> example.com).
-  const labels = hostname.toLowerCase().split('.');
-  for (let i = 0; i < labels.length - 1; i += 1) {
-    if (hosts.has(labels.slice(i).join('.'))) {
-      return true;
+    const blocker = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetch);
+    // Serialized before Ferdium's own rules are added, so they are not stored twice.
+    await writeFile(CACHE_PATH, blocker.serialize());
+    debug(
+      `Ad blocker lists synced: ${blocker.getFilters().networkFilters.length} records`,
+    );
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Ad and tracker blocker',
+        body: 'Filter lists synced successfully.',
+        silent: true,
+      }).show();
     }
+    return blocker;
+  } catch (error) {
+    debug('Could not refresh ad blocker lists', error);
   }
-  return false;
+  try {
+    return ElectronBlocker.deserialize(await readFile(CACHE_PATH));
+  } catch (error) {
+    debug('Could not load ad blocker engine', error);
+    return undefined;
+  }
 };
 
-export const setServiceAdBlock = async (
-  serviceId: string,
-  enabled: boolean,
-): Promise<void> => {
-  const serviceSession = session.fromPartition(`persist:service-${serviceId}`);
+// The engine is shared by every service session. It is loaded once per app
+// start; `engine` stays undefined if neither the lists nor the cache load.
+let engine: ElectronBlocker | undefined;
+let engineReady: Promise<void> | undefined;
 
-  if (!enabled) {
-    sessionsWithBlocking.delete(serviceSession);
-    serviceSession.webRequest.onBeforeRequest(null);
+const startEngine = (): Promise<void> => {
+  if (!engineReady) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, ENGINE_WAIT_MS);
+    });
+    const load = loadBlocker().then(loaded => {
+      loaded?.updateFromDiff({
+        added: [...EXCEPTION_RULES, ...YOUTUBE_RULES],
+      });
+      engine = loaded;
+    });
+    engineReady = Promise.race([load, timeout])
+      .catch(error => debug('Could not start ad blocker engine', error))
+      .finally(() => clearTimeout(timer));
+  }
+  return engineReady;
+};
+
+// Cosmetic filtering needs two IPC channels that the library registers per
+// session. Electron allows one handler per channel, and disabling a session
+// would remove them for every service, so they are registered once, globally.
+let cosmeticHandlersRegistered = false;
+
+const registerCosmeticHandlers = () => {
+  if (cosmeticHandlersRegistered) {
     return;
   }
-  sessionsWithBlocking.add(serviceSession);
-
-  blockedHostsPromise ??= loadBlockedHosts();
-  const hosts = await blockedHostsPromise;
-  if (!hosts) {
-    return;
-  }
-  for (const host of NEVER_BLOCK_HOSTS) {
-    hosts.delete(host);
-  }
-  serviceSession.webRequest.onBeforeRequest(
-    { urls: ['<all_urls>'] },
-    (details, callback) => {
-      if (
-        details.resourceType === 'mainFrame' ||
-        isAuthPage(details.referrer) ||
-        !isBlocked(hosts, details.url)
-      ) {
-        callback({});
-        return;
-      }
-      // Answer with an empty successful response instead of failing the
-      // request, so pages cannot detect the blocker from failed ad requests.
-      const stub = STUB_RESPONSES[details.resourceType];
-      callback(stub ? { redirectURL: stub } : { cancel: true });
+  cosmeticHandlersRegistered = true;
+  ipcMain.handle(
+    '@ghostery/adblocker/inject-cosmetic-filters',
+    async (...args: Parameters<ElectronBlocker['onInjectCosmeticFilters']>) => {
+      await startEngine();
+      return engine?.onInjectCosmeticFilters(...args);
+    },
+  );
+  ipcMain.handle(
+    '@ghostery/adblocker/is-mutation-observer-enabled',
+    async event => {
+      await startEngine();
+      return (await engine?.onIsMutationObserverEnabled(event)) ?? false;
     },
   );
 };
 
-// Hides the in-page ad placeholders and "ad blocker detected" notices of sites
-// that render them themselves (currently Outlook), for services with blocking.
+// Requests wait for the lists instead of passing unfiltered, so a page loaded
+// at startup is filtered without being reloaded (a reload aborted loads that
+// were still in progress).
+const onBeforeRequest = (
+  details: Electron.OnBeforeRequestListenerDetails,
+  callback: (response: Electron.CallbackResponse) => void,
+) => {
+  startEngine()
+    .then(() =>
+      engine ? engine.onBeforeRequest(details, callback) : callback({}),
+    )
+    .catch(error => {
+      debug('Ad blocker could not filter a request', error);
+      callback({});
+    });
+};
+
+// Sessions with blocking active, mapped to their preload script id.
+const blockingSessions = new WeakMap<Electron.Session, string>();
+
+// Electron keeps one webRequest listener per session. Re-registers the blocker's
+// so another listener (an extension's) does not replace it.
+export const restoreAdBlockListener = (ses: Electron.Session): void => {
+  if (blockingSessions.has(ses)) {
+    ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, onBeforeRequest);
+  }
+};
+
+const enableInSession = (ses: Electron.Session) => {
+  if (blockingSessions.has(ses)) {
+    return;
+  }
+  const preloadId = ses.registerPreloadScript({
+    type: 'frame',
+    filePath: PRELOAD_PATH,
+  });
+  ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, onBeforeRequest);
+  blockingSessions.set(ses, preloadId);
+};
+
+const disableInSession = (ses: Electron.Session) => {
+  const preloadId = blockingSessions.get(ses);
+  if (preloadId === undefined) {
+    return;
+  }
+  // Electron keeps one listener per event and session, so clearing them only
+  // affects this service.
+  ses.webRequest.onBeforeRequest(null);
+  ses.unregisterPreloadScript(preloadId);
+  blockingSessions.delete(ses);
+};
+
+export const setServiceAdBlock = (
+  serviceId: string,
+  enabled: boolean,
+): void => {
+  const serviceSession = session.fromPartition(`persist:service-${serviceId}`);
+
+  if (!enabled) {
+    disableInSession(serviceSession);
+    return;
+  }
+  registerCosmeticHandlers();
+  startEngine();
+  enableInSession(serviceSession);
+};
+
+// Page scripts for sites whose ads the lists cannot remove: hides Outlook's
+// in-page ad placeholders and skips YouTube video ads, for services with blocking.
 export const watchAdPlaceholders = (contents: WebContents): void => {
   contents.on('dom-ready', () => {
-    if (!sessionsWithBlocking.has(contents.session)) {
+    if (!blockingSessions.has(contents.session)) {
       return;
     }
     let hostname = '';
@@ -248,6 +222,11 @@ export const watchAdPlaceholders = (contents: WebContents): void => {
       contents
         .executeJavaScript(AD_PLACEHOLDER_CLEANUP_SCRIPT)
         .catch(error => debug('Ad placeholder cleanup failed', error));
+    }
+    if (YOUTUBE_HOSTS.test(hostname)) {
+      contents
+        .executeJavaScript(YOUTUBE_AD_SKIP_SCRIPT)
+        .catch(error => debug('YouTube ad skip failed', error));
     }
   });
 };

@@ -536,5 +536,11 @@
   "workspaceDrawer.item.noServicesAddedYet": "Ningún servicio ha sido añadido",
   "workspaceDrawer.workspaceFeatureInfo": "<p>Los espacios de trabajo Ferdium permiten centrarse en lo que es importante. Configure diferentes conjuntos de servicios y cambie fácilmente entre ellos en cualquier momento. </p><p>Usted decide qué servicios necesita, cuándo y dónde, para que podamos ayudarte a mantenerte al tanto - o apartarte fácilmente del trabajo cuando así lo desees.</p>",
   "workspaceDrawer.workspacesSettingsTooltip": "Editar ajustes de áreas de trabajo",
-  "workspaces.switchingIndicator.switchingTo": "Cambiando a"
+  "workspaces.switchingIndicator.switchingTo": "Cambiando a",
+  "settings.app.sectionExtensions": "Extensiones",
+  "settings.app.extensions.description": "Las extensiones de Chrome sin empaquetar (una carpeta con manifest.json) se cargan en todos los servicios. Las extensiones pueden leer las páginas de tus servicios.",
+  "settings.app.extensions.add": "Añadir carpeta de extensión",
+  "settings.app.extensions.remove": "Quitar",
+  "settings.app.extensions.empty": "No hay extensiones añadidas.",
+  "settings.app.extensions.addFailed": "Esa carpeta no contiene una extensión válida."
 }

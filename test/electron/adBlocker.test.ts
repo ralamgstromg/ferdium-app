@@ -1,10 +1,31 @@
 const mockOnBeforeRequest = jest.fn();
-const mockSession = { webRequest: { onBeforeRequest: mockOnBeforeRequest } };
+const mockOnHeadersReceived = jest.fn();
+const mockRegisterPreloadScript = jest.fn(() => 'preload-id');
+const mockUnregisterPreloadScript = jest.fn();
+// Like Electron, one session object per partition.
+const sessionsByPartition = new Map<string, object>();
+const mockFromPartition = jest.fn((partition: string) => {
+  if (!sessionsByPartition.has(partition)) {
+    sessionsByPartition.set(partition, {
+      webRequest: {
+        onBeforeRequest: mockOnBeforeRequest,
+        onHeadersReceived: mockOnHeadersReceived,
+      },
+      registerPreloadScript: mockRegisterPreloadScript,
+      unregisterPreloadScript: mockUnregisterPreloadScript,
+    });
+  }
+  return sessionsByPartition.get(partition);
+});
+const mockIpcHandle = jest.fn();
 const mockReadFile = jest.fn();
-const mockWriteFile = jest.fn(async () => {});
+const mockWriteFile = jest.fn<Promise<void>, [string, Uint8Array]>(
+  async () => {},
+);
 const mockShow = jest.fn();
 const mockNotification = jest.fn(() => ({ show: mockShow }));
 (mockNotification as any).isSupported = () => true;
+const mockFetch = jest.fn();
 
 jest.mock('node:fs/promises', () => ({
   readFile: mockReadFile,
@@ -12,183 +33,295 @@ jest.mock('node:fs/promises', () => ({
 }));
 jest.mock('electron', () => ({
   Notification: mockNotification,
-  session: { fromPartition: jest.fn(() => mockSession) },
+  ipcMain: { handle: mockIpcHandle, removeHandler: jest.fn() },
+  session: { fromPartition: mockFromPartition },
 }));
 jest.mock('../../src/environment-remote', () => ({
   userDataPath: (...segments: string[]) => segments.join('/'),
 }));
 
-const loadModule = async () =>
+// Ghostery's lists are ABP-format; this stands in for every list it downloads.
+const LIST = [
+  '! comment',
+  '||ads.test^',
+  '||tracker.test^',
+  '||thirdparty.test^$third-party',
+  '||clientmetrics-pa.googleapis.com^',
+].join('\n');
+
+// Ghostery's resources file is JSON with the scriptlets; every other URL is a
+// list. json-prune is the scriptlet the YouTube rule uses.
+const RESOURCES = JSON.stringify({
+  scriptlets: [
+    {
+      name: 'json-prune.js',
+      aliases: ['json-prune'],
+      body: '(function () {})();',
+      dependencies: [],
+    },
+  ],
+});
+const listsReturning = (content: string) => async (url: string) => ({
+  ok: true,
+  text: async () => (url.endsWith('/resources.json') ? RESOURCES : content),
+});
+
+const failingLists = async () => ({
+  ok: false,
+  status: 500,
+  text: async () => '',
+});
+
+const loadModule = () =>
   // eslint-disable-next-line global-require
   require('../../src/electron/adBlocker');
 
-const LIST = [
-  '# comment',
-  '0.0.0.0 ads.test',
-  '||tracker.test^',
-  '||thirdparty.test^$third-party',
-  '||path.test/ads/',
-  'cosmetic.test##.banner',
-  '@@||allowed.test^',
-  'csi.gstatic.com',
-  'localhost',
-].join('\n');
+// Returns the listener Electron would call for each request.
+const requestFilter = (): ((
+  details: object,
+  callback: (response: object) => void,
+) => void) => mockOnBeforeRequest.mock.calls.at(-1)?.[1];
 
-// Runs the registered request handler and returns what it answered.
-const answer = (url: string, resourceType = 'script', referrer = ''): any => {
-  const handler = mockOnBeforeRequest.mock.calls.at(-1)[1];
-  let result: any;
-  handler({ url, resourceType, referrer }, (r: any) => {
-    result = r;
+// Resolves with the blocker's answer. Requests wait for the lists, so this
+// also returns only once the engine has loaded.
+const request = (
+  url: string,
+  resourceType = 'script',
+  referrer = 'https://service.test/',
+) =>
+  new Promise(resolve => {
+    requestFilter()({ id: 1, url, resourceType, referrer }, resolve);
   });
-  return result;
-};
-const isBlockedRequest = (url: string, resourceType = 'script'): boolean => {
-  const result = answer(url, resourceType);
-  return result.cancel === true || result.redirectURL !== undefined;
-};
-
-const contentsFor = (url: string) => {
-  const handlers: Record<string, () => void> = {};
-  return {
-    session: mockSession,
-    getURL: () => url,
-    executeJavaScript: jest.fn(async () => {}),
-    on: (event: string, handler: () => void) => {
-      handlers[event] = handler;
-    },
-    fire: (event: string) => handlers[event](),
-  };
-};
 
 describe('adBlocker', () => {
+  let adBlocker: typeof import('../../src/electron/adBlocker');
+
   beforeEach(() => {
     jest.resetModules();
-    jest.clearAllMocks();
-    mockReadFile.mockRejectedValue(new Error('no cache'));
-    global.fetch = jest.fn(async () => ({
-      ok: true,
-      text: async () => LIST,
-    })) as any;
+    sessionsByPartition.clear();
+    mockIpcHandle.mockClear();
+    mockFetch.mockImplementation(listsReturning(LIST));
+    global.fetch = mockFetch as unknown as typeof fetch;
+    adBlocker = loadModule();
   });
 
-  it('syncs the lists once, caches them and notifies the record count', async () => {
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
-    await setServiceAdBlock('b', true);
+  it('blocks listed domains and their subdomains', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
 
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
-    expect(mockOnBeforeRequest).toHaveBeenCalledTimes(2);
-    expect(mockShow).toHaveBeenCalledTimes(1);
-    expect(mockNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('4 records') }),
+    expect(await request('https://ads.test/banner.js')).toEqual({
+      cancel: true,
+    });
+    expect(await request('https://sub.ads.test/x.gif', 'image')).toEqual({
+      cancel: true,
+    });
+    expect(await request('https://tracker.test/t', 'xhr')).toEqual({
+      cancel: true,
+    });
+    expect(await request('https://site.test/app.js')).toEqual({});
+  });
+
+  it('applies third-party rules only to requests from other sites', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+
+    expect(
+      await request('https://thirdparty.test/t', 'xhr', 'https://site.test/'),
+    ).toEqual({ cancel: true });
+    expect(
+      await request(
+        'https://thirdparty.test/t',
+        'xhr',
+        'https://thirdparty.test/',
+      ),
+    ).toEqual({});
+  });
+
+  it('never blocks main frames, sign-in pages or the Google account hosts', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+
+    expect(await request('https://ads.test/', 'mainFrame')).toEqual({});
+    expect(
+      await request(
+        'https://ads.test/banner.js',
+        'script',
+        'https://accounts.google.com/signin',
+      ),
+    ).toEqual({});
+    expect(
+      await request('https://clientmetrics-pa.googleapis.com/log'),
+    ).toEqual({});
+  });
+
+  it('enables network and cosmetic filtering only in the service session', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+
+    expect(mockFromPartition).toHaveBeenCalledWith('persist:service-service-1');
+    expect(mockRegisterPreloadScript).toHaveBeenCalledWith({
+      type: 'frame',
+      filePath: expect.stringContaining('adblocker-electron-preload'),
+    });
+    expect(mockOnBeforeRequest).toHaveBeenCalledWith(
+      { urls: ['<all_urls>'] },
+      expect.any(Function),
     );
   });
 
-  it('blocks listed hosts and subdomains, not other requests or pages', async () => {
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
+  it('never rewrites response headers, which crashed the app', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
 
-    expect(isBlockedRequest('https://ads.test/x.js')).toBe(true);
-    expect(isBlockedRequest('https://cdn.tracker.test/p.gif')).toBe(true);
-    expect(isBlockedRequest('https://thirdparty.test/x.js')).toBe(true);
-    // Rules that need a full filter engine must not turn into host blocks.
-    expect(isBlockedRequest('https://path.test/x.js')).toBe(false);
-    expect(isBlockedRequest('https://cosmetic.test/x.js')).toBe(false);
-    expect(isBlockedRequest('https://allowed.test/x.js')).toBe(false);
-    expect(isBlockedRequest('https://csi.gstatic.com/x')).toBe(false);
-    expect(isBlockedRequest('https://example.com/x.js')).toBe(false);
-    expect(isBlockedRequest('https://ads.test/', 'mainFrame')).toBe(false);
+    expect(mockOnHeadersReceived).not.toHaveBeenCalled();
   });
 
-  it('answers blocked requests with an empty response, not an error', async () => {
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
+  it('removes its listeners and preload when a service is disabled', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    await adBlocker.setServiceAdBlock('service-1', false);
 
-    expect(answer('https://ads.test/x.js', 'script')).toEqual({
-      redirectURL: 'data:text/javascript,',
+    expect(mockOnBeforeRequest).toHaveBeenLastCalledWith(null);
+    expect(mockUnregisterPreloadScript).toHaveBeenCalledWith('preload-id');
+  });
+
+  it('registers the cosmetic IPC channels once, for all services', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    await adBlocker.setServiceAdBlock('service-2', true);
+
+    const channels = mockIpcHandle.mock.calls.map(([channel]) => channel);
+    expect(channels).toEqual([
+      '@ghostery/adblocker/inject-cosmetic-filters',
+      '@ghostery/adblocker/is-mutation-observer-enabled',
+    ]);
+  });
+
+  it('syncs the lists on start, caches the engine and notifies the rule count', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    await request('https://site.test/');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('ublock-origin/filters.txt'),
+    );
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      'adblocker-engine.bin',
+      expect.any(Uint8Array),
+    );
+    expect(mockNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringMatching(/Filter lists synced successfully/),
+      }),
+    );
+  });
+
+  it('falls back to the cached engine when the lists cannot be downloaded', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    await request('https://site.test/');
+    const cached = mockWriteFile.mock.calls[0][1] as Uint8Array;
+
+    jest.resetModules();
+    mockFetch.mockImplementation(failingLists);
+    mockReadFile.mockResolvedValue(cached);
+    adBlocker = loadModule();
+    await adBlocker.setServiceAdBlock('service-2', true);
+    await request('https://site.test/');
+
+    expect(mockReadFile).toHaveBeenCalledWith('adblocker-engine.bin');
+    expect(await request('https://ads.test/banner.js')).toEqual({
+      cancel: true,
     });
-    expect(answer('https://ads.test/x', 'xhr').redirectURL).toBeDefined();
-    expect(answer('https://ads.test/p', 'ping')).toEqual({ cancel: true });
   });
 
-  it('does not filter requests made by identity provider sign-in pages', async () => {
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
+  it('lets requests through when neither the lists nor the cache are available', async () => {
+    mockFetch.mockImplementation(failingLists);
+    mockReadFile.mockRejectedValue(new Error('ENOENT'));
+    adBlocker = loadModule();
+
+    await adBlocker.setServiceAdBlock('service-1', true);
+
+    expect(await request('https://ads.test/banner.js')).toEqual({});
+  });
+
+  it('holds requests until the lists load instead of letting them pass', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    mockFetch.mockImplementation(async (url: string) => {
+      await gate;
+      return listsReturning(LIST)(url);
+    });
+    adBlocker = loadModule();
+
+    adBlocker.setServiceAdBlock('service-1', true);
+    let answered = false;
+    const response = new Promise(resolve => {
+      requestFilter()(
+        {
+          id: 1,
+          url: 'https://ads.test/banner.js',
+          resourceType: 'script',
+          referrer: 'https://service.test/',
+        },
+        (result: object) => {
+          answered = true;
+          resolve(result);
+        },
+      );
+    });
+    expect(answered).toBe(false);
+
+    release();
+    expect(await response).toEqual({ cancel: true });
+  });
+
+  it('injects the YouTube scriptlet into YouTube pages only', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    const [, inject] =
+      mockIpcHandle.mock.calls
+        .filter(
+          ([channel]) =>
+            channel === '@ghostery/adblocker/inject-cosmetic-filters',
+        )
+        .at(-1) ?? [];
+    const injectInto = async (url: string) => {
+      const executeJavaScript = jest.fn(async () => {});
+      await inject(
+        {
+          frameId: 1,
+          processId: 1,
+          sender: { insertCSS: jest.fn(), executeJavaScript },
+        },
+        url,
+      );
+      return executeJavaScript.mock.calls.length;
+    };
+
+    expect(await injectInto('https://music.youtube.com/')).toBeGreaterThan(0);
+    expect(
+      await injectInto('https://www.youtube.com/watch?v=x'),
+    ).toBeGreaterThan(0);
+    expect(await injectInto('https://site.test/')).toBe(0);
+  });
+  it('skips video ads only on YouTube pages, for services with blocking', async () => {
+    await adBlocker.setServiceAdBlock('service-1', true);
+    const session = mockFromPartition('persist:service-service-1');
+    const pageScripts = (url: string) => {
+      let onReady: (() => void) | undefined;
+      const executeJavaScript = jest.fn(
+        async (code: string) => code && undefined,
+      );
+      adBlocker.watchAdPlaceholders({
+        session,
+        on: (event: string, listener: () => void) => {
+          if (event === 'dom-ready') onReady = listener;
+        },
+        getURL: () => url,
+        executeJavaScript,
+      } as unknown as Electron.WebContents);
+      onReady?.();
+      return executeJavaScript.mock.calls.map(([code]) => String(code));
+    };
 
     expect(
-      answer('https://ads.test/x.js', 'script', 'https://accounts.google.com/'),
-    ).toEqual({});
-    expect(
-      answer('https://ads.test/x.js', 'script', 'https://mail.google.com/'),
-    ).not.toEqual({});
-  });
-
-  it('downloads the lists on every start even with a fresh cache', async () => {
-    mockReadFile.mockResolvedValue('old.test');
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
-
-    expect(global.fetch).toHaveBeenCalled();
-    expect(isBlockedRequest('https://ads.test/x.js')).toBe(true);
-    expect(isBlockedRequest('https://old.test/x.js')).toBe(false);
-  });
-
-  it('falls back to a stale cache when offline', async () => {
-    mockReadFile.mockResolvedValue('ads.test');
-    global.fetch = jest.fn(async () => {
-      throw new Error('offline');
-    }) as any;
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', true);
-
-    expect(isBlockedRequest('https://ads.test/x.js')).toBe(true);
-  });
-
-  it('removes the handler only from the disabled session', async () => {
-    const { setServiceAdBlock } = await loadModule();
-    await setServiceAdBlock('a', false);
-
-    expect(mockOnBeforeRequest).toHaveBeenCalledWith(null);
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  it('degrades to no blocking with no network and no cache', async () => {
-    global.fetch = jest.fn(async () => {
-      throw new Error('offline');
-    }) as any;
-    const { setServiceAdBlock } = await loadModule();
-    await expect(setServiceAdBlock('a', true)).resolves.toBeUndefined();
-
-    expect(mockOnBeforeRequest).not.toHaveBeenCalled();
-  });
-
-  describe('watchAdPlaceholders', () => {
-    it('cleans Outlook only for sessions with blocking enabled', async () => {
-      const { setServiceAdBlock, watchAdPlaceholders } = await loadModule();
-      const outlook = contentsFor('https://outlook.live.com/mail/');
-      watchAdPlaceholders(outlook);
-
-      outlook.fire('dom-ready');
-      expect(outlook.executeJavaScript).not.toHaveBeenCalled();
-
-      await setServiceAdBlock('a', true);
-      outlook.fire('dom-ready');
-      expect(outlook.executeJavaScript).toHaveBeenCalledTimes(1);
-
-      await setServiceAdBlock('a', false);
-      outlook.fire('dom-ready');
-      expect(outlook.executeJavaScript).toHaveBeenCalledTimes(1);
-    });
-
-    it('leaves other sites untouched', async () => {
-      const { setServiceAdBlock, watchAdPlaceholders } = await loadModule();
-      const other = contentsFor('https://example.com/');
-      watchAdPlaceholders(other);
-      await setServiceAdBlock('a', true);
-      other.fire('dom-ready');
-
-      expect(other.executeJavaScript).not.toHaveBeenCalled();
-    });
+      pageScripts('https://music.youtube.com/watch?v=x').some(code =>
+        code.includes('ad-showing'),
+      ),
+    ).toBe(true);
+    expect(pageScripts('https://site.test/')).toEqual([]);
   });
 });
