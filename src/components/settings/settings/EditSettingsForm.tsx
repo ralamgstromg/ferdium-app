@@ -47,7 +47,6 @@ import Icon from '../../ui/icon';
 import Input from '../../ui/input/index';
 import Toggle from '../../ui/toggle';
 import SandboxServiceTabs from '../SandboxServiceTabs';
-import ExtensionsSettings from './ExtensionsSettings';
 
 const debug = require('../../../preload-safe-debug')(
   'Ferdium:EditSettingsForm',
@@ -148,10 +147,6 @@ const messages = defineMessages({
   sectionAdvanced: {
     id: 'settings.app.sectionAdvanced',
     defaultMessage: 'Advanced Settings',
-  },
-  sectionExtensions: {
-    id: 'settings.app.sectionExtensions',
-    defaultMessage: 'Extensions',
   },
   sectionUpdates: {
     id: 'settings.app.sectionUpdates',
@@ -1140,9 +1135,6 @@ class EditSettingsForm extends Component<IProps, IState> {
                 <p className="settings__help indented__help">
                   {intl.formatMessage(messages.appRestartRequired)}
                 </p>
-
-                <H3>{intl.formatMessage(messages.sectionExtensions)}</H3>
-                <ExtensionsSettings />
 
                 <Toggle {...form.$('useSelfSignedCertificates').bind()} />
 

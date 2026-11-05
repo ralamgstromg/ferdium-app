@@ -158,14 +158,6 @@ const onBeforeRequest = (
 // Sessions with blocking active, mapped to their preload script id.
 const blockingSessions = new WeakMap<Electron.Session, string>();
 
-// Electron keeps one webRequest listener per session. Re-registers the blocker's
-// so another listener (an extension's) does not replace it.
-export const restoreAdBlockListener = (ses: Electron.Session): void => {
-  if (blockingSessions.has(ses)) {
-    ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, onBeforeRequest);
-  }
-};
-
 const enableInSession = (ses: Electron.Session) => {
   if (blockingSessions.has(ses)) {
     return;

@@ -6,6 +6,8 @@
 #   (${FERDIUM_TOOLS_DIR:-~/.cache/ferdium-tools}) sin modificar el sistema.
 # - Inicializa el submódulo de recetas, instala dependencias y ejecuta `pnpm start:all-dev`.
 #
+# - En desarrollo activa los logs DEBUG=Ferdium:* (como `pnpm debug`); define DEBUG para cambiarlo.
+#
 # Uso: ./start-env.sh                  (instala si hace falta y arranca en desarrollo)
 #      ./start-env.sh --setup          (solo prepara el entorno, sin arrancar la app)
 #      ./start-env.sh --build [args]   (compilado de producción; ver build.sh)
@@ -105,4 +107,7 @@ if [[ "${1:-}" == "--build" ]]; then
 fi
 
 log "Arrancando Ferdium en modo desarrollo ..."
+# Same logging as `pnpm debug`. An existing DEBUG value wins, so DEBUG=other ./start-env.sh still works.
+export DEBUG="${DEBUG:-Ferdium:*}"
+log "DEBUG=$DEBUG"
 exec pnpm start:all-dev

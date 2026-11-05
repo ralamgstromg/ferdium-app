@@ -50,3 +50,16 @@ export default function userAgent() {
 // the request (same workaround as the service webviews in models/UserAgent).
 export const chromelessUserAgent = (): string =>
   userAgent().replace(/Chrome\/[\d.]+/, 'Chrome');
+
+// Google sign-in pages need the chromeless user agent. A popup can start on
+// about:blank and reach these pages only through a later navigation.
+// Compares the parsed host: a prefix match would also accept
+// accounts.google.com.example.test.
+export const isGoogleSignInUrl = (url: string): boolean => {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === 'https:' && hostname === 'accounts.google.com';
+  } catch {
+    return false;
+  }
+};

@@ -20,10 +20,6 @@ import minimist from 'minimist';
 import ms from 'ms';
 import { enableWebContents, initializeRemote } from './electron-util';
 import { setServiceAdBlock, watchAdPlaceholders } from './electron/adBlocker';
-import {
-  attachExtensions,
-  registerExtensionHandlers,
-} from './electron/extensions';
 import enforceMacOSAppLocation from './enforce-macos-app-location';
 
 initializeRemote();
@@ -60,11 +56,26 @@ import { asarPath } from './helpers/asar-helpers';
 import { checkIfCertIsPresent } from './helpers/certs-helpers';
 import { translateTo } from './helpers/translation-helpers';
 import { openExternalUrl } from './helpers/url-helpers';
-import userAgent, { chromelessUserAgent } from './helpers/userAgent-helpers';
+import userAgent, {
+  chromelessUserAgent,
+  isGoogleSignInUrl,
+} from './helpers/userAgent-helpers';
 import generatedTranslations from './i18n/translations';
 import { darkThemeGrayDarkest } from './themes/legacy';
 
 const debug = require('./preload-safe-debug')('Ferdium:App');
+
+// Popup URLs go to the log without their query values: OAuth parameters are
+// session-bound and should not be written to disk.
+const describePopupUrl = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    const params = [...parsed.searchParams.keys()].join(',');
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname} params=[${params}]`;
+  } catch {
+    return 'invalid-url';
+  }
+};
 
 // Globally set useragent to fix user agent override in service workers
 debug('Set userAgent to ', userAgent());
@@ -302,7 +313,6 @@ const createWindow = () => {
     if (contents.getType() === 'webview') {
       enableWebContents(contents);
       watchAdPlaceholders(contents);
-      attachExtensions(contents.session);
 
       // Set permission handlers on service webview sessions.
       // setPermissionRequestHandler allows safe permissions and denies unknown ones.
@@ -401,13 +411,34 @@ const createWindow = () => {
       contents.on('did-create-window', (child, { url }) => {
         enableWebContents(child.webContents);
         child.webContents.setWebRTCIPHandlingPolicy(webRTCIPHandlingPolicy);
-        if (url.startsWith('https://accounts.google.com')) {
+        debug('Popup created', describePopupUrl(url));
+        child.webContents.on('did-navigate', (_event, navigatedUrl) => {
+          debug('Popup navigated', describePopupUrl(navigatedUrl));
+        });
+        if (isGoogleSignInUrl(url)) {
           // Sign-in popups get the same UA as the service webviews use for
           // Google accounts, otherwise Google reports an unsupported browser.
           // Changing the UA cancels the pending navigation, so reload it.
           child.webContents.setUserAgent(chromelessUserAgent());
           child.webContents.loadURL(url);
         }
+        // A popup opened on about:blank reaches Google through a later
+        // navigation. Catch it, switch the UA and load it again.
+        child.webContents.on('will-navigate', (event, target) => {
+          const isGoogle = isGoogleSignInUrl(target);
+          const chromeless =
+            child.webContents.getUserAgent() === chromelessUserAgent();
+          debug('Popup will navigate', describePopupUrl(target), {
+            isGoogle,
+            chromeless,
+          });
+          if (!isGoogle || chromeless) {
+            return;
+          }
+          event.preventDefault();
+          child.webContents.setUserAgent(chromelessUserAgent());
+          child.webContents.loadURL(target);
+        });
       });
       // Handle will download event from main process (prevent download dialog)
       contents.session.on('will-download', (_e, item) => {
@@ -882,8 +913,6 @@ ipcMain.on('stop-find-in-page', (e, action) => {
   }
   e.returnValue = null;
 });
-
-registerExtensionHandlers();
 
 ipcMain.handle('set-service-adblock', async (_e, { serviceId, enabled }) => {
   if (serviceId === undefined) {
