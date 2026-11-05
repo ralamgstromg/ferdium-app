@@ -419,3 +419,8 @@ src/internal-server/database/*.sqlite-journal
 **/Local Storage/
 **/Session Storage/
 **/IndexedDB/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/
+graphify-out/manifest.json
+graphify-out/graph.json

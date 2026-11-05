@@ -7,7 +7,7 @@
     "enabled": true
   },
   "linter": {
-    "ignore": ["build", "coverage", "node_modules", "recipes", "*.json"],
+    "ignore": ["build", "coverage", "node_modules", "recipes", "graphify-out", "*.json"],
     "rules": {
       "style": {
         "noNonNullAssertion": "off",
