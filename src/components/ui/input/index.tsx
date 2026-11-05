@@ -84,6 +84,17 @@ class Input extends Component<IProps, IState> {
     }
   }
 
+  // Used by mobx-react-form, which receives this instance as the field `ref`
+  // eslint-disable-next-line react/no-unused-class-component-methods, @eslint-react/no-unused-class-component-members
+  focus(): void {
+    this.inputElement.current?.focus();
+  }
+
+  // eslint-disable-next-line react/no-unused-class-component-methods, @eslint-react/no-unused-class-component-members
+  blur(): void {
+    this.inputElement.current?.blur();
+  }
+
   onChange(e: React.ChangeEvent<HTMLInputElement>): void {
     const { scorePassword, onChange = noop } = this.props;
 
@@ -222,4 +233,6 @@ class Input extends Component<IProps, IState> {
   }
 }
 
-export default injectIntl(withStyles(styles, { injectTheme: true })(Input));
+export default injectIntl(withStyles(styles, { injectTheme: true })(Input), {
+  forwardRef: true,
+});
