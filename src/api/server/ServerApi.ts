@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'fs-extra';
 import ms from 'ms';
-import tar from 'tar';
+import * as tar from 'tar';
 
 import RecipeModel, { type IRecipe } from '../../models/Recipe';
 import RecipePreviewModel, {
