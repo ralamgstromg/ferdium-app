@@ -50,16 +50,21 @@ Main-process code for these features lives in `src/electron/`.
   cache fallback, YouTube rules, and the YouTube page script.
 - `test/helpers/userAgent-helpers.test.ts`: `isGoogleSignInUrl`.
 
-## Security scan (trivy 0.76.0, 2026-11-05)
+## Security scan and dependency remediation (2026-11-05)
 
-- Findings are in dependencies that were already present (Electron 44.2.0 has
-  CVEs with fixes in 44.9.1; `tar`, `decompress`, `form-data`,
-  `@adonisjs/bodyparser`, `set-value`, `proxy-addr`). The `@ghostery/*` packages
-  have no findings.
+- Critical vulnerabilities in production and dev: reduced to 0.
+- Upgraded `electron` from 44.2.0 to 44.10.2, addressing intermediate certificate
+  mitigation and frame geometry CVEs.
+- Upgraded `fast-folder-size` from 2.2.0 to 2.4.2, removing the vulnerable
+  `decompress` dependency (symlink and archive traversal CVEs).
+- Upgraded `tar` to 7.5.22 (unlimited input DoS fix), `sqlite3` to 5.1.7, and
+  `simple-git` to 4.0.2.
+- Enforced non-vulnerable transitive versions via `pnpm-workspace.yaml` overrides
+  (`@adonisjs/bodyparser`, `set-value`, `proxy-addr`, `form-data`,
+  `shell-quote`, `cross-spawn`, `fast-uri`, `axios`, `@faker-js/faker`).
 - Secrets: the JWT in `src/internal-server/app/Controllers/Http/UserController.js`
-  is a masked placeholder (`'****'`), reported as a false positive.
+  is a masked placeholder (`'****'`), confirmed as a false positive.
 - Dockerfile: `:latest` tag, root user, no `HEALTHCHECK`. Pre-existing.
-- Not changed in this work. Electron upgrade needs its own plan.
 
 ## WebAuthn page script on sign-in pages
 
